@@ -28,4 +28,4 @@ A Kodi 21 Omega addon that transforms your local video library into smart virtua
 
 ## Current Version
 
-1.0.7
+1.0.9
