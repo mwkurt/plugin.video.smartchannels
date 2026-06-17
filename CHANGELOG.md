@@ -2,7 +2,66 @@
 
 ---
 
-## Version 1.0.10
+## Version 1.0.11g
+### Changes
+- **Coming Up Next font size increase** (`coming_up_next.py`)
+  - Header ("Coming Up Next"): `font14` → `font16`
+  - Content lines (show/episode info): `font13` → `font14`
+  - PNG background (`bg_overlay.png`) and panel dimensions unchanged (160px height)
+  - Layout fits within existing panel; no coordinate adjustments needed
+
+---
+
+## Version 1.0.11
+### New Features
+
+**Coming Up Next overlay (coming_up_next.py, service.py, settings.xml)**
+- A self-contained overlay window appears near the end of each episode
+  showing information about what plays next.
+- Implemented as a new module (coming_up_next.py) following the same
+  pattern as serial.py — fully self-contained, no changes to queue
+  building, state management, or channel_manager.py.
+- The overlay is a WindowDialog rendered over the video without
+  interrupting playback. It auto-dismisses after the configured duration
+  and can be dismissed early by any remote or keyboard action.
+- Adapts automatically to all display resolutions (720p, 1080p, 4K)
+  because Kodi scales from its 1280x720 logical coordinate space to
+  the physical display.
+- User settings (Settings > Coming Up Next):
+    - Enable / disable the overlay
+    - Corner position: Top Left, Top Right, Bottom Left, Bottom Right
+    - Display duration in seconds (default 8)
+    - Show / hide: show or movie name
+    - Show / hide: season and episode number
+    - Show / hide: episode title
+- Trigger: the poll timer in service.py detects when remaining time
+  falls within (duration + 20) seconds of the episode end. The overlay
+  request is queued via _pending_overlay and displayed from the main
+  service thread (required for xbmcgui on all platforms).
+- Next-episode data is read from the existing queue file — no additional
+  state or library access required.
+- Works for TV episodes and movies (movies show title and year).
+- Architecture rules honoured:
+    - service.py owns all playback callbacks and timing logic
+    - coming_up_next.py owns overlay rendering only
+    - channel_manager.py not touched
+    - No hardcoded user-visible strings (all in strings.po #32170-#32180, #32300)
+
+### Bug Fixes
+
+**Fix 1 — Coming Up Next overlay never fired when resume was disabled (service.py)**
+- _start_poll_timer returned immediately when _resume_on_stop was False
+  or when the channel was recycle=False. Since the Coming Up Next overlay
+  trigger lives inside _poll_save which is only called by the poll timer,
+  the overlay never fired if resume was turned off in settings.
+- Fix: _start_poll_timer now always starts the timer when a channel is
+  playing, regardless of resume settings. The resume-specific guards
+  (resume_on_stop check and recycle=False check) were moved inside
+  _poll_save to wrap only the resume save block. The overlay trigger
+  block is completely independent of resume settings and fires for all
+  channel types.
+
+
 ### Bug Fixes
 
 **Fix 1 — Short shows (fewer episodes than EPS) only appeared once in queue (channel_manager.py)**
