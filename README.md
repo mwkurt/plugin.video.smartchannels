@@ -1,116 +1,224 @@
 # plugin.video.smartchannels
-## Smart TV Channels for Kodi 21 (Omega)
+## Smart TV Channels for Kodi 21 (Omega) / Kodi 22 (Piers)
 
 Create smart TV-style channels from your local Kodi video library. Channels
-play TV episodes and movies in configurable rotation with persistent queue and
-state across Kodi restarts.
+play episodes and movies in configurable rotation with persistent queue and
+state across Kodi restarts, resume from exact playback position, and support
+multi-client shared storage (e.g. multiple NVIDIA Shields sharing the same NAS).
 
 ---
 
-## Features
+## Channel Types
 
-- **Round Robin TV channels** — rotate through multiple shows in order, one or
-  more episodes per show per turn
-- **Random TV channels** — episodes from each show in random order, no-repeat
-  tracking within each cycle
-- **Movie channels** — sequential or shuffled movie playback with cycle tracking
-- **Episodes Per Slot** — configure each show to contribute N consecutive
-  episodes per rotation turn (e.g. Show A=2, Show B=1 → AA, B, AA, B …)
-- **Manual show rotation order** — drag each show into position via the wizard
-- **Custom starting points** — pick a specific episode (or Surprise Me!) for
-  each show when creating a channel
-- **Interleave** — insert items from a second channel at a configurable
-  frequency (fixed or jittered), with optional count-per-slot
-- **Filters** — narrow content by Genre, Year, MPAA, Studio, or Rating with
-  AND/OR logic applied in Python against a local library cache
-- **Exact resume** — resume from exact playback position after stop or restart
-- **Recycle or Play Once** — loop channels forever or stop when content is
-  exhausted
-- **Shared storage** — SMB/NFS path for multi-client (e.g. NVIDIA Shield)
-  setups sharing the same state and queue files
-- **Backup & Restore** — export/import channels.json and state.json
+### TV Channel
+Rotates through one or more TV shows in round-robin or random order.
+- **Round Robin** — shows play in strict rotation, one or more episodes per turn
+- **Random** — episodes from each show in random order with no-repeat tracking
+- **Episodes Per Slot** — each show can contribute N consecutive episodes per
+  turn (e.g. Show A=2, Show B=1 → AA, B, AA, B …)
+- **Custom starting point** — choose a specific episode (or Surprise Me!) for
+  each show at channel creation
+- **Manual rotation order** — drag shows into the order you want
+
+### Movie Channel
+Plays movies sequentially or shuffled with full cycle tracking.
+- Filter by Genre, Year, MPAA rating, Studio, or Rating
+- Recycle or play once (exhausts when all movies are played)
+
+### Serial Channel
+Plays shows in strict broadcast order — Show A all the way through, then
+Show B from the beginning. No rotation. Designed for watching a series
+from start to finish before moving on.
+- Recycle or play once (channel auto-deletes when all shows are exhausted)
+
+### Folder Channel
+Plays all video files from a local folder path, in order or shuffled.
+Useful for bumpers, intros, commercials, or any content not in the Kodi
+library.
+
+### Auto-Create Channels
+Automatically generates genre-based TV channels from your library. The
+wizard detects genres present in your library and creates one or more
+channels populated with shows matching those genres.
 
 ---
 
-## File Structure
+## Key Features
 
-```
-plugin.video.smartchannels/
-├── addon.py                   Entry point; parses URL params and dispatches
-├── addon.xml                  Kodi manifest (id, version, requires)
-├── service.py                 Persistent background service; owns ALL playback events
-└── resources/
-    ├── settings.xml           Addon settings schema
-    ├── language/
-    │   └── resource.language.en_gb/
-    │       └── strings.po     All localised strings
-    └── lib/
-        ├── channel_manager.py CRUD, state persistence, queue building
-        ├── library.py         Kodi JSON-RPC wrapper (TV shows, episodes, movies)
-        ├── player.py          start_channel() and now_playing.json writer only
-        ├── router.py          URL action → controller mapping
-        └── ui/
-            └── channels.py    Channel listing, wizards, interleave dialog
-```
+### Carousel Mode (Pseudo-Live)
+TV and Movie channels can be set to Carousel mode, which advances the
+queue on a wall-clock timer (default: 20 minutes). When you open a
+Carousel channel, you pick up wherever the clock currently sits — just
+like a broadcast channel. Configurable interval and pop count.
+
+### Interleave
+Insert content from a second channel into a TV channel's playback at a
+configurable frequency. For example: play a movie from CH-MOV every 4
+episodes of your TV channel.
+- **Silent interleave** — the interleaved item plays but the OSD shows
+  the TV channel name and the item is hidden from the upcoming list.
+  Ideal for bumpers, commercials, or folder content you want invisible.
+- **Multiple interleave sources** — add more than one interleave source,
+  each with its own frequency and silent setting.
+
+### Side Panel
+The main channel list opens as a two-pane side panel:
+- **Left pane** — your channel list
+- **Right pane** — the upcoming queue for the selected channel (7 items,
+  silent interleave items hidden)
+- Arrow right to enter the right pane and select any upcoming item to
+  start playback from that point
+- Full context menu on any channel: Channel Info, Play, Reset, Edit,
+  Delete, Toggle Visibility, Manage Interleave, View Exclusions
+- Show Hidden Channels toggle in Settings
+
+### Coming Up Next
+An overlay appears near the end of each episode showing the title of
+the next item in the queue.
+
+### Exact Resume
+Stop mid-episode and the addon saves your exact position. Next time you
+open the channel, a resume dialog offers to continue from where you left
+off or start over. Position is polled every 60 seconds and saved to
+state.json.
+
+### Recycle vs Play Once
+- **Recycle=True** — channel loops forever
+- **Recycle=False** — channel exhausts when all content is played.
+  Serial channels with Recycle=False auto-delete on exhaustion.
+
+### View Exclusions (Movie Channels)
+See and manage which movies have been excluded from a movie channel's
+rotation.
+
+### Backup & Restore
+Export all channel definitions and state to a zip file. Restore from
+any previous backup. Useful before major changes or when migrating to
+a new device.
+
+---
+
+## Multi-Client / Shared Storage
+
+The addon supports MySQL-backed shared Kodi libraries served over
+NFS/SMB from a NAS. Queue files and state.json can be stored on shared
+storage so multiple clients (e.g. two NVIDIA Shields) share the same
+channel positions. Configure the shared path in Settings → Network.
 
 ---
 
 ## Architecture
 
-```
-addon.py ──► Router (router.py)
-               ├── ChannelUI (ui/channels.py)
-               │     └── ChannelManager ── LibraryClient
-               └── SmartPlayer (player.py)  [starts playback only]
+### Module Ownership (never violated)
+- `service.py` — ALL playback callbacks, state advancement, skip
+  detection, resume, queue top-up, carousel ticks, exhaustion handling
+- `player.py` — ONLY `start_channel()` and `_write_now_playing()`
+- `channel_manager.py` — queue building, state read/write, library
+  access, CRUD operations
+- `library.py` — the ONLY file that calls `executeJSONRPC`
+- `utils/paths.py` — canonical path and JSON utilities
 
-service.py (always-on background service)
-  └── Watches now_playing.json
-        ├── advance_state / advance_movie_state
-        ├── queue top-up via ChannelManager.refill_queue()
-        └── exact resume (poll + seek on onAVStarted)
+### File Layout
+```
+plugin.video.smartchannels/
+├── addon.py                      Entry point; dispatches URL actions
+├── addon.xml                     Kodi manifest
+├── service.py                    Always-on background service
+└── resources/
+    ├── settings.xml              Addon settings schema
+    ├── language/
+    │   └── resource.language.en_gb/
+    │       └── strings.po        All localised strings (457 strings)
+    ├── skins/
+    │   ├── skin.estuary/         Side panel XML (Estuary)
+    │   ├── Default/              Side panel XML (Default)
+    │   └── skin.confluence/      Side panel XML (Confluence)
+    └── lib/
+        ├── channel_manager.py    CRUD, state, queue building, top-up
+        ├── library.py            Kodi JSON-RPC wrapper
+        ├── player.py             start_channel() only
+        ├── router.py             URL action → controller
+        ├── carousel.py           Carousel tick logic
+        ├── serial.py             Serial channel queue builder
+        ├── state.py              State key helpers
+        ├── coming_up_next.py     CUN overlay
+        ├── channels/
+        │   ├── tv.py             TV queue builder
+        │   ├── movies.py         Movie queue builder
+        │   ├── folder.py         Folder queue builder
+        │   ├── serial.py         Serial queue builder
+        │   ├── interleave.py     Interleave weaving logic
+        │   └── base.py           Shared base class
+        ├── ui/
+        │   ├── channels.py       Channel listing, wizards, dialogs
+        │   ├── side_panel.py     Side panel window controller
+        │   ├── auto_channels.py  Auto-Create wizard
+        │   └── dialogs.py        Shared dialog helpers
+        └── utils/
+            ├── paths.py          Path and JSON utilities
+            ├── logger.py         Logging helpers
+            └── extra_folders.py  Folder scanning utilities
 ```
 
-**Ownership rules (never violated):**
-- `service.py` owns ALL playback callbacks, state advancement, resume, queue top-up
-- `player.py` owns ONLY `start_channel()` and `_write_now_playing()`
-- `channel_manager.py` owns queue building, state read/write, library access
+### Data Files (addon profile folder)
+| File | Purpose |
+|------|---------|
+| `channels.json` | All channel definitions |
+| `state.json` | Per-channel playback pointers, resume positions, carousel clocks |
+| `queue_<id>.json` | Current episode/movie queue per channel |
+| `now_playing.json` | Active channel pointer (written by player.py) |
+| `local_library.json` | Local cache of Kodi library (TV shows, movies) |
 
 ---
 
-## Data Files (addon profile folder)
+## Settings
 
-| File               | Purpose                                              |
-|--------------------|------------------------------------------------------|
-| `channels.json`    | All channel definitions                              |
-| `state.json`       | Per-channel playback pointers, resume positions      |
-| `queue_<id>.json`  | Current episode/movie queue per channel              |
-| `now_playing.json` | Active channel pointer (written by player.py)        |
-
-### Channel definition schema
-```json
-{
-  "id":         "uuid-string",
-  "name":       "Evening Drama",
-  "channel_type": "tv",
-  "shows": [
-    {"tvshowid": 42, "title": "Breaking Bad", "episodes_per_slot": 2},
-    {"tvshowid": 17, "title": "Better Call Saul"}
-  ],
-  "randomize":  false,
-  "recycle":    true,
-  "queue_size": 50,
-  "visible":    true,
-  "filters":    [],
-  "interleave": {"channel_id": "other-uuid", "frequency": 4, "jitter": 0, "count_per": 1}
-}
-```
+| Category | Key Settings |
+|----------|-------------|
+| Channels | Create New Channel, Auto-Create Channels, Open Smart Channels |
+| Playback | Episodes Per Slot default, queue size default |
+| Cache | Library cache age, Refresh Library Cache |
+| Network | Shared storage path for multi-client setups |
+| Resume | Enable/disable resume, poll interval, ask or auto-resume |
+| Advanced | Show Hidden Channels, Side Panel toggle, Delete All Addon Data |
+| Backup & Restore | Backup Addon Data, Restore Addon Data |
+| Coming Up Next | Enable/disable, timing |
 
 ---
 
 ## Installation
 
-1. Zip the `plugin.video.smartchannels/` folder (uncompressed).
+1. Zip the `plugin.video.smartchannels/` folder (uncompressed, no
+   `__pycache__` directories).
 2. In Kodi: **Add-ons → Install from zip file** → select your zip.
-3. Or copy the folder directly to `~/.kodi/addons/plugin.video.smartchannels/`.
+3. Or copy the folder directly to
+   `~/.kodi/addons/plugin.video.smartchannels/`.
 4. Enable the addon and navigate to **Video Add-ons → Smart TV Channels**.
-5. Run **[Build Library Cache]** before creating your first channel.
+5. Go to **Settings → Cache → Refresh Library Cache** before creating
+   your first channel.
+
+---
+
+## Known Limitations
+
+- **Editing a channel that is currently playing on another device.**
+  The edit saves correctly but the playing device won't pick up the
+  change until it stops and reopens the channel. Avoid editing a channel
+  that is actively playing on another client if you need the change
+  immediately.
+- **Double-silent at top-up join boundary.** When two top-ups fire in
+  rapid succession on a channel with silent folder interleave, two
+  silent items may appear back-to-back at the join. Playback is
+  unaffected; it is cosmetic only.
+- **Movie channel filter persistence.** Filter type and value (Genre,
+  Year, etc.) are not currently displayed in Channel Info or
+  pre-selected when editing a movie channel. The filter is applied
+  correctly at creation — this is a display/edit convenience issue only.
+- **Channel logos.** Not yet implemented. Planned for the next revision.
+
+---
+
+## Version
+
+Current stable release: **1.1.6f**
+Compatible with: Kodi 21 (Omega), Kodi 22 (Piers)
