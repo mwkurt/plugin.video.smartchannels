@@ -41,9 +41,24 @@ Useful for bumpers, intros, commercials, or any content not in the Kodi
 library.
 
 ### Auto-Create Channels
-Automatically generates genre-based TV channels from your library. The
-wizard detects genres present in your library and creates one or more
-channels populated with shows matching those genres.
+Automatically generates channels from your library using a multi-step wizard:
+
+- **Content type** — TV only, Movies only, or Both
+- **Group by** — four options:
+  - *Genre* — one channel per genre present in your library
+    (e.g. Comedy TV, Comedy Movies)
+  - *Decade* — one channel per decade (e.g. 1990s TV, 2000s Movies)
+  - *Genre + Decade* — cross-product (e.g. 1990s Comedy TV)
+  - *Studio / Network* — one channel per studio or network tag
+- **Minimum items** — channels below this episode/movie count are excluded
+  from the preview (set to 0 to see all candidates)
+- **Interleave** — when creating Both (TV + Movies) with Genre or Decade
+  grouping, optionally weave movies into the TV channel at a configurable
+  frequency (e.g. every 4 episodes)
+- **Preview** — multiselect screen to check/uncheck exactly which channels
+  to create before committing
+- **Starting episodes** — choose Start from S01E01 or Surprise Me!
+  (random starting episode per show) for all TV channels in the batch
 
 ---
 
