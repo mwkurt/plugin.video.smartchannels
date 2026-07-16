@@ -2,6 +2,214 @@
 
 ---
 
+## Version 1.1.6q
+
+### Fix — play button showing empty box glyph
+- The ▶ Unicode triangle in string #32648 was rendering as [] on Windows/
+  Estuary because the skin font doesn't include that glyph.
+- Replaced with plain ASCII "> Play" which renders correctly everywhere.
+- Files changed: `strings.po`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.6p
+
+### Play button — channel icon and channel name
+- The ▶ Play row at the top of the right pane now shows the channel's own
+  icon/logo in the poster slot (thumb) instead of the generic Kodi projector.
+- label2 now shows the channel name, so the row reads:
+    [channel icon]  ▶  Play
+                    {Channel Name}
+- String #32648 updated from "▶  Play Channel" to "▶  Play" since the
+  channel name is now supplied dynamically as label2.
+- Files changed: `ui/side_panel.py`, `strings.po`, `addon.xml`, `CHANGELOG.md`
+- No other changes.
+
+---
+
+## Version 1.1.6o
+
+### Fix — TV episode posters not showing
+- Queue items store the show ID as `show_id` / `_show_id`, not `tvshowid`.
+  The poster lookup was using `item.get("tvshowid")` which always returned
+  -1 and never matched. Fixed to use `show_id` with `_show_id` fallback.
+
+### Right pane — portrait posters and larger layout
+- Poster image changed from landscape (120×72) to portrait (60×90) to match
+  the natural 2:3 aspect ratio of movie/show poster art (1080i skins).
+- Row height increased 88→120px; title font bumped font16→font20; label
+  positions adjusted to clear the narrower portrait poster.
+- Confluence 720p skin scaled proportionally: 64→84px rows, 80×52→44×66
+  poster, font13→font16 title.
+- Files changed: `ui/side_panel.py`, all three `SmartChannels_Main.xml`,
+  `addon.xml`, `CHANGELOG.md`
+- No changes to: `library.py`, `channel_manager.py`, `ui/channels.py`,
+  `service.py`, `player.py`, `router.py`, `strings.po`, queue files
+
+---
+
+## Version 1.1.6n
+
+### Show/movie poster thumbnails in side panel right pane
+- The right pane upcoming list previously showed Kodi's generic projector
+  icon for every item because queue items deliberately omit art/thumbnail
+  fields to keep queue files small.
+- Added "art" property to VideoLibrary.GetTVShows and VideoLibrary.GetMovies
+  in build_local_cache(). Each show and movie now stores a "poster" field
+  (art.poster) in local_library.json.
+- _populate_panel() builds two in-memory dicts ({tvshowid: poster_url} and
+  {movieid: poster_url}) once per panel open from the already-cached library
+  data — no RPC calls per item.
+- _format_queue_item() now resolves thumb from those dicts: show poster for
+  TV episodes, movie poster for movies, falls back to item thumbnail then
+  empty (which shows DefaultVideo.png fallback in the XML).
+- Folder channel items are unaffected (no tvshowid/movieid).
+- **Requires one library cache rebuild** (Settings → Refresh Library) after
+  installing, so the new poster field is populated in local_library.json.
+- Files changed: `library.py`, `ui/side_panel.py`, `addon.xml`, `CHANGELOG.md`
+- No changes to: `channel_manager.py`, `ui/channels.py`, `service.py`,
+  `player.py`, `router.py`, `strings.po`, queue files, state.json
+
+---
+
+## Version 1.1.6m
+
+### Fix — channel rename and icon change require addon restart
+- Edit channel and manage interleave now call the wizard directly on the
+  side panel thread instead of via RunPlugin. RunPlugin fires a separate
+  Python invoker and returns immediately; the side panel's ChannelManager
+  instance never saw the disk changes, so the old name/icon persisted
+  until the addon was re-entered.
+- Added `ChannelManager.reload_channels()` — re-reads channels.json from
+  disk. Called after any operation that runs in a separate invoker
+  (set_channel_icon).
+- The set_channel_icon refresh now also calls reload_channels() so the
+  new icon is visible immediately without re-entering the addon.
+
+### Channel list — larger icons and channel name text
+- All three skin XMLs updated: item row height 72→96 (1080i) / 56→72 (720p),
+  icon 48×48→72×72 (1080i) / 36×36→54×54 (720p), channel name font
+  font16→font20 (1080i) / font13→font16 (720p), label left position
+  adjusted to match new icon width.
+- Files changed: `channel_manager.py`, `ui/side_panel.py`,
+  `resources/skins/*/SmartChannels_Main.xml`, `addon.xml`, `CHANGELOG.md`
+- No changes to: `ui/channels.py`, `service.py`, `player.py`, `router.py`,
+  `library.py`, `strings.po`, queue files, state.json
+
+---
+
+## Version 1.1.6l
+
+### Bug fix — channel list crash on open (1.1.6k regression)
+- `resolve_channel_icon()` referenced `self._addon` but `ChannelManager`
+  stores the addon instance as `self.addon` (no underscore). This caused
+  an AttributeError on every channel list render, producing a black screen.
+- Fixed: `self._addon` → `self.addon`.
+- Files changed: `channel_manager.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.6k
+
+### Channel Icons for Side Panel and Channel List
+- New setting: "Channel Icon Folder" — point to a folder of image files
+  (.png / .jpg / .jpeg). Channels whose name matches a filename (without
+  extension, case-insensitive) are assigned that image as their icon
+  automatically, on every list render.
+- New context menu option "Set Channel Icon" on every channel (both the
+  standard channel list and the side panel). Opens Kodi's file browser
+  to select an image. The chosen path is saved as `icon_path` in
+  channels.json.
+- "Set Channel Icon" also offers "Clear Icon" to remove the manual
+  assignment and revert to auto-match or the built-in fallback.
+- Icon resolution priority: (1) manual icon_path, (2) icon folder
+  name-match, (3) DefaultVideoPlaylists.png Kodi built-in fallback.
+- All hardcoded DefaultVideoPlaylists.png references in ui/channels.py
+  and ui/side_panel.py removed — all icon resolution now goes through
+  channel_manager.resolve_channel_icon() as a single source of truth.
+- New strings: #32664 (Channel Icon Folder), #32665 (Set Channel Icon),
+  #32666 (Clear Icon).
+- Files changed: `channel_manager.py`, `ui/channels.py`,
+  `ui/side_panel.py`, `router.py`, `addon.py`, `settings.xml`,
+  `strings.po`, `addon.xml`, `CHANGELOG.md`
+- No changes to: `service.py`, `player.py`, `library.py`, queue files,
+  state.json, carousel, interleave, resume
+
+---
+
+## Version 1.1.6j
+
+### Remove redundant Genre/Year pickers from movie channel wizard
+- The Movie Selection Method dialog previously offered 4 options: All Movies,
+  Filter by Genre, Filter by Year, and Select Specific Movies. The Genre and
+  Year options were redundant with the Step 3b filter rules system, which does
+  the same thing but better: it applies dynamically at every queue build against
+  the live library (new additions are picked up automatically), supports multiple
+  rules with AND/OR operators, and covers more filter types (MPAA, Studio, Rating).
+- Movie Selection Method now offers only 2 options: All Movies and Select
+  Specific Movies. Genre/year filtering is done exclusively via Step 3b filter
+  rules.
+- Channel Info now shows every Step 3b filter rule individually (one line per
+  rule with operator prefix and comparison) instead of the generic "Filters: Yes".
+- Removed filter_type and filter_value from wizard, channel_manager, and
+  channel_info — these were introduced in 1.1.6g–1.1.6i and are no longer needed.
+- Retired strings: #32423, #32424, #32426, #32428–32433, #32661–32663 (IDs
+  preserved, msgid blanked per Kodi repo convention). #32427 ("Select Genre")
+  retained — still used by the Step 3b filter rule builder.
+- Files changed: `ui/channels.py`, `channel_manager.py`, `strings.po`,
+  `addon.xml`, `CHANGELOG.md`
+- No changes to: `service.py`, `player.py`, `library.py`, queue files, state.json
+
+---
+
+## Version 1.1.6i
+
+### Bug fix — Channel Info only showed one filter rule
+- The Step 3b `filters` list supports multiple rules (e.g. Genre = Action
+  OR Genre = Comedy), but Channel Info was only reading `filter_type`/
+  `filter_value` which captured only the Step 3 quick-picker (one value).
+- Channel Info now iterates the full `filters` list and shows one indented
+  line per rule with its operator prefix (AND/OR) and comparison symbol,
+  matching the summary format used inside `_build_filters`.
+- The Step 3 quick-picker label (`filter_type`) still shows first when
+  present (By Genre / By Year / Manual selection method line).
+- Files changed: `ui/channels.py`, `addon.xml`, `CHANGELOG.md`
+- No changes to: `channel_manager.py`, `service.py`, `player.py`,
+  `library.py`, `strings.po`, queue files, state.json
+
+---
+
+## Version 1.1.6h
+
+### Bug fix — filter_type/filter_value not persisted to channels.json
+- `add_channel` and `update_channel` in `channel_manager.py` were not
+  whitelisting the new `filter_type` and `filter_value` keys, so they
+  were silently dropped when saving. Channel Info therefore always saw
+  `None` for both fields and showed no filter label.
+- Fixed by adding both keys to the definition dicts in both methods.
+- Files changed: `channel_manager.py`, `addon.xml`, `CHANGELOG.md`
+- No changes to: `ui/channels.py`, `service.py`, `player.py`,
+  `library.py`, `strings.po`, queue files, state.json
+
+---
+
+## Version 1.1.6g
+
+### Movie Channel Filter Persistence
+- `filter_type` and `filter_value` are now saved to `channels.json` when creating or editing a movie channel (values: `"all"`, `"genre"`, `"year"`, `"manual"`)
+- Channel Info now displays a specific filter label instead of the generic "Filters: Yes":
+  - By Genre: "Filter: By Genre — Comedy" (or chosen genre)
+  - By Year: "Filter: By Year — 2022" (or chosen year)
+  - Manual: "Filter: Manual selection"
+  - All Movies / old channels without filter_type: no filter line shown
+- Edit wizard pre-highlights the previously chosen filter type in the Movie Selection Method dialog
+- Edit wizard pre-highlights the previously chosen genre or year in the sub-picker
+- 3 new strings: #32661, #32662, #32663
+- Files changed: `resources/lib/ui/channels.py`, `resources/language/resource.language.en_gb/strings.po`, `addon.xml`, `CHANGELOG.md`
+- No changes to: `service.py`, `player.py`, `channel_manager.py`, `library.py`, queue files, state.json, interleave, carousel, resume
+
+---
+
 ## Version 1.1.6f
 - Fix: Create New Channel and Auto-Create Channels settings action buttons
   silently did nothing when pressed. Root cause: Kodi requires every

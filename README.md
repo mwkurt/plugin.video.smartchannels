@@ -22,7 +22,11 @@ Rotates through one or more TV shows in round-robin or random order.
 
 ### Movie Channel
 Plays movies sequentially or shuffled with full cycle tracking.
-- Filter by Genre, Year, MPAA rating, Studio, or Rating
+- **All Movies** — every movie in your library
+- **Select Specific Movies** — hand-pick a list of titles
+- **Filter rules** — filter by Genre, Year, MPAA rating, Studio, or Rating
+  using multiple AND/OR rules applied dynamically at every queue build
+  (new library additions are picked up automatically)
 - Recycle or play once (exhausts when all movies are played)
 
 ### Serial Channel
@@ -45,6 +49,15 @@ channels populated with shows matching those genres.
 
 ## Key Features
 
+### Channel Icons
+Assign custom icons to channels two ways:
+- **Auto-match** — set a Channel Icon Folder in Settings. Any image file
+  whose name (without extension) matches a channel name is automatically
+  used as that channel's icon. Supports .png, .jpg, .jpeg. Case-insensitive.
+- **Manual** — right-click any channel → Set Channel Icon → browse for any
+  image file. Stored per-channel in channels.json. Use Clear Icon to revert
+  to auto-match or the default.
+
 ### Carousel Mode (Pseudo-Live)
 TV and Movie channels can be set to Carousel mode, which advances the
 queue on a wall-clock timer (default: 20 minutes). When you open a
@@ -63,14 +76,22 @@ episodes of your TV channel.
 
 ### Side Panel
 The main channel list opens as a two-pane side panel:
-- **Left pane** — your channel list
-- **Right pane** — the upcoming queue for the selected channel (7 items,
-  silent interleave items hidden)
+- **Left pane** — your channel list with channel icon and name
+- **Right pane** — the upcoming queue for the selected channel with show/movie
+  poster art, title, and episode info. Top item is a > Play button showing
+  the channel icon and name
 - Arrow right to enter the right pane and select any upcoming item to
   start playback from that point
 - Full context menu on any channel: Channel Info, Play, Reset, Edit,
-  Delete, Toggle Visibility, Manage Interleave, View Exclusions
+  Delete, Toggle Visibility, Manage Interleave, View Exclusions, Set Channel Icon
+- Channel edits (name, icon) take effect immediately in the side panel
+  without needing to back out of the addon
 - Show Hidden Channels toggle in Settings
+
+### Channel Info
+Displays a summary of any channel including type, show/movie list, queue
+depth, filter rules (shown individually with AND/OR operators), carousel
+status, and interleave config.
 
 ### Coming Up Next
 An overlay appears near the end of each episode showing the title of
@@ -114,7 +135,7 @@ channel positions. Configure the shared path in Settings → Network.
   detection, resume, queue top-up, carousel ticks, exhaustion handling
 - `player.py` — ONLY `start_channel()` and `_write_now_playing()`
 - `channel_manager.py` — queue building, state read/write, library
-  access, CRUD operations
+  access, CRUD operations, channel icon resolution
 - `library.py` — the ONLY file that calls `executeJSONRPC`
 - `utils/paths.py` — canonical path and JSON utilities
 
@@ -128,14 +149,15 @@ plugin.video.smartchannels/
     ├── settings.xml              Addon settings schema
     ├── language/
     │   └── resource.language.en_gb/
-    │       └── strings.po        All localised strings (457 strings)
+    │       └── strings.po        All localised strings
     ├── skins/
-    │   ├── skin.estuary/         Side panel XML (Estuary)
-    │   ├── Default/              Side panel XML (Default)
-    │   └── skin.confluence/      Side panel XML (Confluence)
+    │   ├── skin.estuary/         Side panel XML (Estuary 1080i)
+    │   ├── Default/              Side panel XML (Default 1080i)
+    │   └── skin.confluence/      Side panel XML (Confluence 720p)
     └── lib/
-        ├── channel_manager.py    CRUD, state, queue building, top-up
-        ├── library.py            Kodi JSON-RPC wrapper
+        ├── channel_manager.py    CRUD, state, queue building, top-up,
+        │                         icon resolution
+        ├── library.py            Kodi JSON-RPC wrapper + local cache
         ├── player.py             start_channel() only
         ├── router.py             URL action → controller
         ├── carousel.py           Carousel tick logic
@@ -148,7 +170,7 @@ plugin.video.smartchannels/
         │   ├── folder.py         Folder queue builder
         │   ├── serial.py         Serial queue builder
         │   ├── interleave.py     Interleave weaving logic
-        │   └── base.py           Shared base class
+        │   └── base.py           Shared base class + normalize_ep()
         ├── ui/
         │   ├── channels.py       Channel listing, wizards, dialogs
         │   ├── side_panel.py     Side panel window controller
@@ -163,11 +185,11 @@ plugin.video.smartchannels/
 ### Data Files (addon profile folder)
 | File | Purpose |
 |------|---------|
-| `channels.json` | All channel definitions |
+| `channels.json` | All channel definitions including icon_path |
 | `state.json` | Per-channel playback pointers, resume positions, carousel clocks |
 | `queue_<id>.json` | Current episode/movie queue per channel |
 | `now_playing.json` | Active channel pointer (written by player.py) |
-| `local_library.json` | Local cache of Kodi library (TV shows, movies) |
+| `local_library.json` | Local cache of Kodi library (TV shows + poster art, movies + poster art) |
 
 ---
 
@@ -175,7 +197,7 @@ plugin.video.smartchannels/
 
 | Category | Key Settings |
 |----------|-------------|
-| Channels | Create New Channel, Auto-Create Channels, Open Smart Channels |
+| Channels | Create New Channel, Auto-Create Channels, Open Smart Channels, Channel Icon Folder |
 | Playback | Episodes Per Slot default, queue size default |
 | Cache | Library cache age, Refresh Library Cache |
 | Network | Shared storage path for multi-client setups |
@@ -195,7 +217,8 @@ plugin.video.smartchannels/
    `~/.kodi/addons/plugin.video.smartchannels/`.
 4. Enable the addon and navigate to **Video Add-ons → Smart TV Channels**.
 5. Go to **Settings → Cache → Refresh Library Cache** before creating
-   your first channel.
+   your first channel. This is required after any update that adds new
+   library fields (e.g. poster art).
 
 ---
 
@@ -210,15 +233,21 @@ plugin.video.smartchannels/
   rapid succession on a channel with silent folder interleave, two
   silent items may appear back-to-back at the join. Playback is
   unaffected; it is cosmetic only.
-- **Movie channel filter persistence.** Filter type and value (Genre,
-  Year, etc.) are not currently displayed in Channel Info or
-  pre-selected when editing a movie channel. The filter is applied
-  correctly at creation — this is a display/edit convenience issue only.
-- **Channel logos.** Not yet implemented. Planned for the next revision.
+- **Carousel edit pre-selection.** When editing a channel that has
+  Carousel mode enabled, the edit wizard does not pre-highlight the
+  Carousel Enabled option. The setting is preserved correctly on save —
+  this is a cosmetic wizard convenience issue only. Planned fix in the
+  next major revision.
+- **Icon folder performance.** The icon folder is scanned on every
+  channel list render for any channel without an exact-case filename
+  match. On large channel lists with many unmatched channels over SMB,
+  this may add slight latency. Mitigation: name icon files to match
+  channel names exactly (case-sensitive) to avoid the directory scan
+  fallback, or use manual icon assignment.
 
 ---
 
 ## Version
 
-Current stable release: **1.1.6f**
+Current stable release: **1.1.6q**
 Compatible with: Kodi 21 (Omega), Kodi 22 (Piers)
