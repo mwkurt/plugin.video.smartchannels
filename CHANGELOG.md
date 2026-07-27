@@ -2,6 +2,2390 @@
 
 ---
 
+## Version 1.2.1u
+
+### Bug fix: last movie resume replaced by exhaustion dialog on stop/restart
+
+When the last movie on a recycle=False channel was stopped mid-way
+(after a resume position was saved), reopening the channel showed the
+exhaustion dialog instead of offering to resume.
+
+Root cause identified from log evidence: when the user skips to the last
+movie in the playlist, `_update_queue_file` triggers a top-up. The top-up
+returns 0 new items (last movie is the only unplayed one). The
+skip-exhaustion check then fired:
+
+    if len(remaining) <= 1 and len(new_remaining) == len(remaining):
+        is_done = True
+
+`remaining == 1` (the last movie still playing) satisfied `<= 1`, so
+`is_done = True` was set, the queue file was deleted, and
+`_pending_exhausted_channel` was set — all while the movie was still
+playing. Resume saves written at 60s, 120s, etc. were orphaned because
+the queue file was gone. On restart, `_resume_from_existing_queue` found
+no queue file, `_channel_exhausted()` returned True, and the exhaustion
+dialog fired before any resume could be offered.
+
+Fix: change `len(remaining) <= 1` to `len(remaining) == 0`. The
+skip-exhaustion path now only fires when the queue is completely empty
+(the last item has genuinely finished). When `remaining == 1` the item
+is still playing — `onPlayBackEnded` handles exhaustion correctly after
+natural completion without deleting the queue file prematurely.
+
+**File changed:** `service.py` only.
+**Strings:** unchanged (Highest #32804, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1t
+
+### Party channel improvements (mirrors audio channel fixes)
+
+**Remove Recycle/Stop from party wizard**
+Party channels have no working exhaustion tracking. The step is removed
+and `recycle=True` is hardcoded, matching the audio channel fix in 1.2.1n.
+
+**New playback order: Random (no repeats)**
+Party wizard now offers two choices: Random and Random (no repeats).
+No_repeat tracking uses file paths (not songid — party files are not in
+the library) stored under `ch_<id>:party_no_repeat_played` in state.json.
+Full cycle resets when all files have been heard. Both the skip loop and
+`_handle_end` record played files, matching the audio channel pattern.
+
+**Channel info and channel list display updated**
+Party channels now show their playback order in both the channel list
+entry and the channel info dialog. The "When exhausted" line is removed.
+
+**New public methods on channel_manager:**
+- `get_party_no_repeat_played(channel_id)`
+- `set_party_no_repeat_played(channel_id, played)`
+
+**Files changed:** `service.py`, `resources/lib/channels/party.py`,
+`resources/lib/channel_manager.py`, `resources/lib/ui/channels.py`.
+**Strings:** unchanged (Highest #32804, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1s
+
+### Bug fix: audio channels creating spurious TV-style state entry
+
+On every audio song start, `set_now_playing` was creating a state.json
+entry shaped like a TV episode (`next_episode_id`, `season`, `episode`,
+`played_ids`) under the key `ch_<id>:0`. This is meaningless for audio
+and pollutes state.json with junk data.
+
+The guard that prevents this for movies (`is_movie`) was not extended to
+audio items. Fixed by adding `or ep.get("is_audio")` to the guard so
+audio items are skipped the same way movies are.
+
+After this fix, state.json for an audio channel will only contain the
+`ch_<id>:audio_no_repeat_played` key written by no_repeat tracking —
+nothing else.
+
+**File changed:** `service.py` only.
+**Strings:** unchanged (Highest #32804, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1r
+
+### Bug fix: no_repeat tracking never fires on this Kodi platform
+
+`record_no_repeat_played` was only called from `_handle_end`, which is
+only reached via `onPlayBackEnded`. On this Kodi build, `onPlayBackEnded`
+does not fire reliably for audio playlist items — song transitions instead
+appear as single-position "skip" detections in `_check_now_playing`.
+
+Fixed by adding a dedicated audio branch in the skip detection loop,
+parallel to the existing folder item branch. When the skip loop processes
+an audio item on a `no_repeat` channel, it calls `record_no_repeat_played`
+and continues — matching the same pattern used for folder and movie items.
+The `_handle_end` call site is retained for platforms where
+`onPlayBackEnded` does fire correctly.
+
+**File changed:** `service.py` only.
+**Strings:** unchanged (Highest #32804, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1q
+
+### Architecture fix: audio no_repeat state I/O moved to channel_manager
+
+`_no_repeat_filter` and `record_no_repeat_played` in `audio.py` were
+calling `self._cm._load_json` and `self._cm._save_json` directly —
+private channel_manager methods. State I/O belongs to channel_manager,
+not to a queue builder.
+
+Fixed by adding two public methods to `channel_manager.py`:
+- `get_audio_no_repeat_played(channel_id)` — returns played songid list
+- `set_audio_no_repeat_played(channel_id, played)` — persists the list
+
+`audio.py` now calls these public methods only. No private method access.
+No behaviour change — pure architectural correction.
+
+**Files changed:** `channel_manager.py`, `resources/lib/channels/audio.py`.
+**Strings:** unchanged (Highest #32804, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1p
+
+### Bug fix: "Random (no repeats)" showing as "Random" in channel info dialog
+
+The channel info dialog had a separate `order_str` lookup dict from the
+channel list display, and the `no_repeat` entry was missing from it.
+Fixed by adding `"no_repeat": self._s(32804)` to the channel info dict.
+
+**File changed:** `resources/lib/ui/channels.py` only.
+**Strings:** unchanged (Highest #32804, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1o
+
+### Bug fix: Audio CUN missing artist and album
+
+`_write_now_playing()` in `player.py` serialised audio queue items through
+the TV/folder minimal branch, which only writes `title`, `file`, `duration`
+and the standard ID fields. `artist`, `album`, `songid`, `is_audio`, and all
+other music metadata were stripped on every queue write.
+
+Fixed by adding a dedicated audio/party branch that preserves all music
+fields. Coming Up Next and the side panel now correctly display artist and
+album for audio channels.
+
+**File changed:** `resources/lib/player.py` only.
+**Strings:** unchanged (Highest #32804, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1n
+
+### Audio channel improvements
+
+**Remove Recycle/Stop from audio wizard**
+Audio channels have no exhaustion tracking, so the Recycle/Stop dialog
+was meaningless. The step is removed. All audio channels are implicitly
+recycle=True.
+
+**New playback order: Random (no repeats)**
+Adds a "Random (no repeats — all songs play once)" option to the audio
+channel wizard. Tracks played song IDs in state.json under the key
+`ch_<id>:audio_no_repeat_played`. On each top-up, already-played songs
+are excluded. When the full pool has been heard, the played list resets
+and a new cycle begins. Pure random shuffle within each cycle.
+
+**Files changed:** `resources/lib/channels/audio.py`,
+`resources/lib/ui/channels.py`, `service.py`, `strings.po`.
+**Strings:** #32804 added. Highest #32804, 0 duplicates, 0 broken.
+
+---
+
+## Version 1.2.1m
+
+### Bug fix: Sort Channels A-Z uses lexicographic order instead of natural order
+
+Channel names with numbers sorted incorrectly: "Channel 11" appeared
+before "Channel 2" because string comparison treats "1" < "2" character
+by character. Fixed by replacing the plain `.lower()` sort key with a
+natural sort that splits names into alternating text and integer segments,
+sorting numeric parts as integers.
+
+Before: 1, 11, 12, 13, 14, 2, 3, 4 ...
+After:  1, 2, 3, 4, 11, 12, 13, 14 ...
+
+**Files changed:** `resources/lib/channel_manager.py` only.
+**Strings:** unchanged (Highest #32803, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1l
+
+### Bug fix: Serial channel ignores queue_size when pool < queue_size
+
+A serial channel with QS=200 and a 15-episode pool (2 shows) only built
+~30 items instead of 200 — the same as QS=30. Root cause: `max_visits`
+in the build loop was set to `len(shows) + 1` (3 for a 2-show channel),
+which only allowed a single cycle through the show list before the
+infinite-loop guard broke out, regardless of how many cycles were needed
+to fill `target_size`.
+
+Fix: `max_visits` is now `(target_size + 1) * len(shows) + 1`, which
+gives the loop enough headroom to fill any target_size regardless of pool
+size, while still providing a hard ceiling against infinite loops.
+
+Practical effect: a 2-show serial channel with 15 total episodes and
+QS=200 now correctly builds 200 items (13+ full cycles). Top-ups during
+playback continue the sequence correctly via `refill_queue →
+SerialQueueBuilder.build()` with `current_queue` scan.
+
+**Files changed:** `resources/lib/channels/serial.py` only.
+**Strings:** unchanged (Highest #32803, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1k
+
+### Bug fix: Serial recycle=False channels incorrectly top up when QS > pool size
+
+When a serial channel with recycle=False had a queue_size larger than its
+total episode pool (e.g. QS=200 with 15 episodes across 2 shows), the
+top-up mechanism fired immediately after creation or on first resume,
+treating the 15-item queue as "below threshold" (default threshold=15).
+The serial builder had already placed all content into the queue — there
+is nothing legitimate to top up — but the top-up called build() again,
+which wrapped and produced repeated/interleaved content.
+
+**Root cause:** The top-up guard in `_resume_from_existing_queue` used
+`_channel_exhausted()` to decide whether to top up. For serial channels
+that have never played anything yet, `_channel_exhausted()` correctly
+returns False (no `next_episode_id=None` written to state), so the guard
+does not prevent the top-up. `_channel_exhausted()` is the right guard
+for TV/Movie/Folder recycle=False channels (which legitimately need top-ups
+while unplayed content remains), but serial is architecturally different:
+the builder places ALL content into the queue at build time — the queue
+IS the complete content list.
+
+**Fix:** Added `is_serial_stop` guard in both `_resume_from_existing_queue`
+(channel_manager.py) and `_update_queue_file` (service.py). When
+`channel_type == "serial"` and `recycle=False`, top-up is blocked entirely.
+All other channel types are unaffected — TV, Movie, Folder, Audio, Party
+recycle=False channels continue to top up via `_channel_exhausted()` as
+before. Serial recycle=True channels are also unaffected (`is_serial_stop`
+is False when recycle=True).
+
+**Files changed:** `service.py`, `resources/lib/channel_manager.py`
+**Strings:** unchanged (Highest #32803, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1k
+
+### Bug fix: Serial channel queue corrupted by wrong builder on first play
+
+When a serial channel was played, `_resume_from_existing_queue` called
+`_topup_queue` (the TV round-robin builder) to top up the queue. This is
+architecturally wrong — `_topup_queue` has no knowledge of serial show
+order and produces interleaved content. The corruption was visible
+immediately: the queue file gained 15 extra items alternating between
+shows instead of playing them sequentially.
+
+**Root cause:** `_resume_from_existing_queue` checked `_channel_exhausted()`
+to decide whether to top up. For a channel that has never been played,
+`_channel_exhausted()` correctly returns False (no playback state written
+yet), so the top-up fired regardless of whether there was any new content
+to add.
+
+**Fix:** Serial channels are excluded from the `_topup_queue` call in
+`_resume_from_existing_queue` entirely. Serial top-ups during playback
+go through `refill_queue → SerialQueueBuilder.build()`, which correctly
+continues from the current position and returns nothing when all content
+is already queued. The TV round-robin builder must never touch a serial
+channel queue.
+
+This applies to both recycle=True and recycle=False serial channels since
+`_topup_queue` is wrong for serial in either case.
+
+**Files changed:** `resources/lib/channel_manager.py` only.
+**Strings:** unchanged (Highest #32803, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1j
+
+### New: Audio channel "Shuffle Albums" playback order
+
+Adds a fourth playback order option for Audio channels: **Shuffle Albums**.
+
+- All selected albums across all chosen artists are pooled together
+- The album sequence is randomised (shuffled as whole units)
+- Tracks within each album play in disc → track order
+- Complete albums play through before moving to the next
+
+This fills the gap between "Album Order" (strict artist-then-artist sequence)
+and "Random" (individual songs shuffled). Shuffle Albums gives album-coherent
+playback with a randomised album sequence across all artists.
+
+**Wizard behaviour:**
+- Artist Rotation Order picker: shown for Shuffle Albums with 2+ artists
+  (controls which artist's albums seed the shuffle pool)
+- Album Order picker per artist: shown for Shuffle Albums with 2+ albums
+  (allows manual or shuffled ordering within an artist before global shuffle)
+- `randomize` flag: remains False (album-coherent, not song-random)
+
+**Files changed:** `channels/audio.py`, `ui/channels.py`, `strings.po`
+**New string:** #32803 "Shuffle Albums"
+**Strings:** 595 total, 0 duplicates, 0 broken.
+
+---
+
+## Version 1.2.1i
+
+### Removed: Channel Visibility (Hide/Show) feature
+
+Channels are always visible. The feature added friction to channel creation
+with no real benefit — if you don't want a channel, delete it.
+
+**Removed in full:**
+- Visibility wizard step in all wizards (TV/Movie, Audio, Party, Serial, Folder)
+- "Toggle Visibility" entry in addon.py dispatch table, router.py, and both
+  context menus (plugin directory and Side Panel)
+- `[H]` prefix on hidden channels in both list views
+- "Show Hidden Channels" setting in settings.xml
+- `show_hidden` branching in list_channels and all Side Panel refresh paths
+- `toggle_visibility()` in channel_manager.py
+- Strings: #32156, #32207, #32232, #32233, #32287, #32288
+
+**Files changed:** `addon.py`, `router.py`, `channel_manager.py`,
+`ui/channels.py`, `ui/side_panel.py`, `settings.xml`, `strings.po`
+**Strings:** 594 total, 0 duplicates, 0 broken (6 removed).
+
+---
+
+## Version 1.2.1h
+
+### Bug fix: Movie channel recycle=False random queue ignored queue_size
+
+When a Movie channel was configured as All Movies / Random / Stop (recycle=False)
+with a queue_size smaller than the library, the fresh build ignored the target
+and queued the entire unplayed pool — Test 5 built 5613 items instead of 200.
+
+Root cause: the `recycle=False` random branch in `_build_movie_queue` iterated
+the full shuffled pool with no `target_size` cap. The `recycle=True` path and
+the sequential path both cap correctly at `target_size`; this branch was the
+only one missing the guard.
+
+Fix: added `if len(queue) >= target_size: break` inside the loop.
+
+**Files changed:** `resources/lib/channel_manager.py` only.
+**Strings:** unchanged (Highest #32802, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1g
+
+### UX: Movie wizard skips filters and exclusions when user picks specific movies
+
+When creating or editing a Movie channel via "Pick Specific Movies", the
+filter rules step (Step 3b) and the movie exclusions step (Step 5b) are
+now skipped entirely. Both steps are redundant when the user has already
+hand-picked exactly the movies they want — filtering or excluding on top
+of an explicit selection serves no purpose.
+
+- "All Movies from Library" route: filter rules and exclusions unchanged.
+- "Pick Specific Movies" route: `filters` forced to `[]`, `excluded_movies`
+  forced to `[]`. Any previously stored filters/exclusions on a channel
+  being edited via this route are cleared on save.
+
+**Files changed:** `resources/lib/ui/channels.py` only.
+**Strings:** unchanged (Highest #32802, 0 duplicates, 0 broken).
+
+---
+
+## Version 1.2.1f
+
+### Fix — IndentationError in channels.py line 1806 on channel create
+
+`IndentationError: expected an indented block` at `channels.py` line 1806
+prevented any channel creation or editing. The `_pick_list_order()` helper
+introduced in 1.2.1e had a comment and `return items` statement merged onto
+the same line during the str_replace edit:
+
+```python
+# Keep as-is (0 = Keep Selection Order, -1 = cancelled)            return items
+```
+
+Python read the `return` as part of the comment, leaving the `if` block with
+no body. Fixed by restoring the correct line break.
+
+**File changed:** `resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.1e
+
+### Feature — Audio channel artist and album order pickers
+
+When creating or editing an audio channel in Artist mode, the playback
+order is now selected **first** (before content selection) so the wizard
+can conditionally show order pickers only when they are relevant.
+
+**New wizard flow:**
+1. Playback Order (Random / Balanced / Album Order) ← moved to step 1
+2. Content mode (Filter by Artist / Advanced Filter / Full Library)
+3. Artist multiselect (unchanged)
+4. **Artist Rotation Order** — shown only for Balanced and Album Order
+   modes when more than one artist is selected. Options: Keep Selection
+   Order, Shuffle (with preview and Shuffle Again loop), Set Order
+   Manually (pick artists one by one, confirm, start over).
+5. Album picker per artist (unchanged)
+6. **Album Order** — shown only for Album Order mode when more than one
+   album is selected for an artist. Same three options as artist order.
+7. Song exclusions (unchanged)
+8. Recycle, Queue Size, Visibility
+
+Order pickers are completely skipped for Random mode (order is
+irrelevant) and for Balanced mode at the album level (albums within
+an artist are already handled by the balanced shuffler).
+
+**Implementation:** A reusable `_pick_list_order()` helper method was
+extracted to avoid duplicating the shuffle/manual order logic that
+already existed in the TV show and movie channel wizards.
+
+**New strings:** #32799–#32802
+**Files changed:** `resources/lib/ui/channels.py`,
+`resources/language/resource.language.en_gb/strings.po`
+
+---
+
+## Version 1.2.1d
+
+### Fix — Carousel allowed on schedule source channel after schedule fires
+
+The carousel suppression check in the channel wizard only matched
+schedules with `"active": true`. Once a Once-type schedule had fired
+(`active` set to `false`), the channel could have carousel enabled on
+the next edit — even though the schedule relationship still exists and
+could be re-used or recreated.
+
+Fixed: the `active` condition removed from the `_is_schedule_source`
+check. Any schedule that lists this channel as its source — regardless
+of active state — blocks carousel.
+
+**Note:** Existing channels with carousel incorrectly enabled (e.g.
+Block Source Channel) will not be fixed automatically. Edit the channel
+through the wizard and save — the check will now detect the schedule
+relationship and force `carousel_enabled = False`.
+
+**File changed:** `resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.1c
+
+### Fix — Audio/party channels available as interleave sources for video channels
+
+The Manage Interleave source picker had no channel type filter — audio
+and party channels appeared as valid interleave sources alongside TV,
+movie, folder, and serial channels. Interleaving audio into a video
+channel makes no sense and would produce broken queue items.
+
+Fixed: audio and party channels now excluded from the `other` list in
+`manage_interleave_dialog()`, consistent with the schedule wizard which
+has correctly excluded them since 1.2.0a.
+
+Note: the schedule wizard source and target pickers already excluded
+audio and party — this fix closes the same gap in the interleave dialog.
+
+**File changed:** `resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.1b
+
+### Fix — Add Schedule and Manage Interleave shown for audio/party in Side Panel
+
+The Side Panel context menu showed Add Schedule and Manage Interleave
+for audio and party channels. The suppression that was already in place
+in `channels.py` (the plugin directory view) had never been ported to
+`side_panel.py`.
+
+Fixed: both items now excluded for `audio` and `party` channel types,
+matching the logic in `channels.py`.
+
+**File changed:** `resources/lib/ui/side_panel.py`
+
+---
+
+## Version 1.2.1a
+
+### Fix — Audio genre filter returning "No Genres Found In Library"
+
+`AudioLibrary.GetGenres` was called with an empty params dict `{}`.
+In Kodi 21, this RPC returns only `genreid` by default — the `title`
+field is not included unless explicitly requested in a `properties`
+array. Every genre item had `title=None`, the list comprehension
+produced `[]`, and the wizard showed "No Genres Found In Library"
+even on a library with 26,362 tagged songs.
+
+Fixed by adding `"properties": ["title"]` to the RPC call.
+
+**File changed:** `resources/lib/library.py`
+
+---
+
+## Version 1.2.0z
+
+### Fix — Side panel song/track selection always played first song
+
+Clicking a song in the side panel right pane for an audio or party channel
+always played the first song in the queue instead of the selected one.
+
+**Root cause:** `build_queue()` for audio and party channels always did a
+fresh build — there was no `_resume_from_existing_queue()` check. So when
+`_play_from_item()` reordered the queue file on disk to put the selected
+song first, `play_channel()` immediately called `build_queue()` which
+rebuilt from scratch, discarding the reorder.
+
+Folder, serial, and TV channels all had the resume-from-existing check;
+audio and party were missing it.
+
+**Fix:** Added `_resume_from_existing_queue()` guard to both audio and
+party branches in `build_queue()`, identical to the folder channel pattern.
+The reordered queue file is now picked up and returned as-is.
+
+**File changed:** `resources/lib/channel_manager.py`
+
+---
+
+## Version 1.2.0y
+
+### Cleanup — Remove diagnostic log lines added during audio exclusion debugging
+
+Two verbose diagnostic log lines added during the 1.2.0s–1.2.0v debug
+cycle removed from `_build_audio_song_exclusions`:
+
+- `[AudioExclusions] get_songs_with_filters: N songs, included_albums=...`
+- `[AudioExclusions] pool: N artists, songs per artist: ...`
+
+The error-path log (`get_songs_with_filters failed`) is retained as it
+is genuinely useful if the songs cache ever fails to load.
+
+**File changed:** `resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.0x
+
+### Fix — Exclusion artist picker labels were ambiguous
+
+The song exclusion artist picker showed "Jimmy Buffett — No songs excluded"
+which read as a status statement rather than a clickable action. Users
+reasonably assumed it was informational and selected "Done" without
+realising they needed to click the artist row to enter the song picker.
+
+Fixed by updating three strings:
+- #32774: "Exclude Songs" → "Exclude Songs — Select Artist" (dialog title
+  now clarifies this is an artist picker)
+- #32778: "No songs excluded" → "Tap to select songs to exclude" (clearly
+  an action)
+- #32777: "{0} song(s) excluded" → "{0} song(s) excluded — tap to change"
+  (clearly an action even when some songs are already excluded)
+
+**File changed:** `resources/language/resource.language.en_gb/strings.po`
+
+---
+
+## Version 1.2.0w
+
+### Fix — Song exclusion picker replaced with working select() toggle loop
+
+`d.multiselect()` returns `None` immediately without displaying on this
+Kodi build, causing the song list to never appear after selecting an album
+in the exclusion picker. Replaced with a `d.select()` toggle loop — the
+same pattern used throughout the rest of the wizard and confirmed working.
+
+Songs are listed with `[X]` (excluded) or `[ ]` (included) markers.
+Selecting a song toggles its exclusion state. "Done" exits back to the
+album picker. The exclusion set is built up interactively across multiple
+albums and artists before the wizard proceeds.
+
+**File changed:** `resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.0v
+
+### Diagnostic — Audio exclusion builder: expose pool key mismatch
+
+The exclusion picker shows the artist list correctly but selecting an
+artist returns immediately to the artist list without showing albums.
+The pool contains 10 songs for Jimmy Buffett but `pool.get(chosen_artist)`
+is returning empty — indicating the pool key and the lookup key do not
+match despite appearing identical in log output.
+
+Added log line at the exact point of the lookup:
+`[AudioExclusions] picked artist=... pool keys=... albums_dict empty=...`
+
+This will expose any hidden character, encoding, or whitespace difference
+between the two strings.
+
+**File changed:** `resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.0u
+
+### Fix — Song exclusion picker never showing songs
+
+After selecting an album in the exclusion builder, the song multiselect
+dialog never appeared — control returned immediately to the album picker.
+
+**Root cause:** `d.multiselect()` was called with `preselect=[]` (empty
+list) when no songs were previously excluded. On Kodi 21, passing an
+empty list to `multiselect(preselect=...)` causes the dialog to return
+`None` immediately without displaying. The code then treated `None` as
+"cancelled" and looped back to the album picker.
+
+The artist and album pickers in the wizard use `multiselect()` with
+non-empty preselect lists (all items ticked by default), so they were
+unaffected.
+
+**Fix:** Pass `preselect=None` when the preselect list is empty, which
+tells Kodi to show the dialog with nothing pre-selected.
+
+**File changed:** `resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.0t
+
+### Fix — Audio channel fields not saved on create; exclusion builder silent failure
+
+Two bugs in the audio channel wizard:
+
+**1 — `create_channel` missing audio fields (`channel_manager.py`)**
+When creating a new audio channel, `audio_filters`, `included_albums`,
+`excluded_songs`, and `audio_order` were absent from the channel dict
+built in `create_channel()`. The wizard returned them correctly but
+`create_channel` never read them from the definition — identical gap to
+the `update_channel` bug fixed in 1.2.0r. Fixed: all four fields added
+to the `create_channel` dict.
+
+**2 — Song exclusion builder silent exception (`ui/channels.py`)**
+`_build_audio_song_exclusions` catches exceptions from
+`get_songs_with_filters` and silently returns an empty list with no log
+line. This masked whatever error was preventing songs from loading,
+leaving the exclusion artist picker appearing to work (artist names shown)
+but selecting an artist going nowhere (pool was empty). Fixed: exception
+now logged before returning. Permanent `[AudioExclusions]` log lines added
+after the fetch and after pool build so future failures are diagnosable.
+
+**Files changed:** `resources/lib/channel_manager.py`,
+`resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.0s
+
+### Diagnostic — Audio exclusion builder: add pool/song-count logging
+
+The song exclusion picker in the audio wizard (artist mode) shows the
+artist list but selecting an artist immediately returns to the list
+without showing albums. Root cause not yet confirmed from logs — the
+pool that maps artist→album→songs appears to be empty when the dialog
+runs. Two log lines added to `_build_audio_song_exclusions` immediately
+after the pool is built:
+
+- `[AudioExclusions] pool built: N artists, songs per artist: {...}`
+- `[AudioExclusions] get_songs_with_filters returned N songs, included_albums={...}`
+
+These will confirm whether the filtered song fetch returned results and
+whether the pool was populated correctly.
+
+**File changed:** `resources/lib/ui/channels.py`
+
+---
+
+## Version 1.2.0r
+
+### Fix — Audio channel edits not saved to channels.json
+
+When editing an audio channel (changing artist selection, album picks,
+song exclusions, or playback order), the changes were silently discarded.
+`channels.json` was written but contained the pre-edit values, and the
+queue was not rebuilt.
+
+**Root cause:** `update_channel()` in `channel_manager.py` had two gaps
+for audio-specific fields (`audio_filters`, `included_albums`,
+`excluded_songs`, `audio_order`):
+
+1. The `channel.update()` call that persists the wizard's result to the
+   in-memory channel dict did not include these four fields — so the new
+   values from the wizard were never applied and `_save_channels()` wrote
+   the old values back to disk.
+
+2. The `_no_queue_change` guard that decides whether to rebuild the queue
+   did not check these fields — so even if they had been saved, the queue
+   would still not have been rebuilt after an audio filter change.
+
+**Fix:** Added all four fields to both `channel.update()` and the
+`_no_queue_change` comparison. Also added pre-edit snapshots of the four
+fields (alongside the existing `old_shows`, `old_filters`, etc.) so the
+`_no_queue_change` comparison has correct before/after values.
+
+**Files changed:** `resources/lib/channel_manager.py`
+
+---
+
+## Version 1.2.0m
+
+### Fix — Audio library API calls corrected against Kodi Omega schema
+
+Verified all audio library RPC calls against the official Kodi Omega
+`types.json` and `methods.json` schema. Found two additional incorrect
+field usages:
+
+**`AudioLibrary.GetArtists`:** `"artist"` is not a requestable property —
+it is returned automatically in every `Audio.Details.Artist` result.
+Requesting it caused the RPC to fail. Fixed: properties now `["thumbnail"]`
+only.
+
+**`AudioLibrary.GetGenres`:** Genres are returned with a `"title"` field
+per `Library.Details.Genre` schema. The code was reading `g["label"]`
+which does not exist, resulting in an empty genres list. Fixed: now reads
+`g["title"]`.
+
+**Note on `artistid` and `songid`:** Both are valid requestable fields in
+the schema, but the schema explicitly warns that requesting them causes
+"increased response times." They are also returned automatically, so we
+never need to request them.
+
+### Fix — Songs cache rebuild: removed blocking progress dialog
+
+The manual "Rebuild Songs Cache" button in Settings previously showed a
+progress dialog that appeared frozen because the underlying RPC call blocked
+for the entire query duration with no intermediate progress updates.
+Replaced with a fire-and-forget background thread: a toast fires immediately
+on start, and another fires when the rebuild completes or fails.
+
+### Optimization — Songs cache: paginated GetSongs (500 per page)
+
+`build_songs_cache` now fetches songs in batches of 500 using the
+`limits` parameter instead of one unbounded query. This prevents the
+18-second single-query timeout on large MySQL libraries by breaking the
+work into smaller result sets that MySQL and Kodi's JSON-RPC serializer
+handle more efficiently.
+
+**Files changed:** `resources/lib/library.py`, `resources/lib/router.py`
+
+---
+
+## Version 1.2.0l
+
+### Fix — Audio channel wizard: "No genres" error when selecting Artist filter
+
+`AudioLibrary.GetArtists` was called with `"artistid"` in the properties
+array. In Kodi 21, `artistid` is returned automatically and is not a valid
+requestable property — the same class of bug as `"songid"` in `GetSongs`.
+The RPC call failed silently, returning 0 artists. The wizard then showed
+the "No genres found" dialog (string 32478 was reused incorrectly for both
+genres and artists). The user saw a confusing error about genres when the
+actual problem was the artist fetch failing.
+
+**Fixes:**
+- Removed `"artistid"` from `AudioLibrary.GetArtists` properties in
+  `library.py`. The ID is still returned automatically by Kodi.
+- Added string #32787 "No artists found in music library." — shown when
+  the artist fetch returns empty.
+- Added string #32788 "No artists selected." — shown when the user
+  deselects everything in the artist multiselect.
+- Replaced the two incorrect 32478 ("No genres") uses in the artist
+  wizard path with the correct new strings.
+
+**Note on Settings → Cache:** The "Songs Cache Age" and "Rebuild Songs
+Cache" buttons were added in 1.2.0k but may not appear until Kodi fully
+restarts (not just the addon). A full Kodi restart clears the cached
+settings definition and picks up the new settings.xml.
+
+**Files changed:** `resources/lib/library.py`,
+`resources/lib/ui/channels.py`,
+`resources/language/resource.language.en_gb/strings.po`
+(new strings #32787, #32788)
+
+---
+
+## Version 1.2.0k
+
+### Feature — Songs Cache (audio channel creation now instant)
+
+Audio channels and Party Mode both called `AudioLibrary.GetSongs` at
+queue-build time. On large shared MySQL libraries this query takes 15–20
+seconds, blocking channel startup entirely.
+
+**New:** `songs_cache.json` — a local disk cache of the entire music
+library, built once in the background and read in milliseconds at
+channel-open time.
+
+**How it works:**
+- On addon startup, the service checks the songs cache age against the
+  same `cache_max_age_days` setting used by the video cache (default 7
+  days). If stale or missing, a background thread calls
+  `build_songs_cache()` — the 18-second MySQL query runs once, not every
+  time a channel opens.
+- `get_all_songs()` in `LibraryClient` now reads from `songs_cache.json`
+  first (instant), falling back to the live RPC only when no cache exists.
+- In-memory caching (`_cached("all_songs")`) still applies on top, so
+  repeated calls within the same session cost nothing.
+- `AudioLibrary.OnScanFinished` triggers an automatic background rebuild,
+  keeping the cache current after a music library scan.
+- **Settings → Cache:** New read-only "Songs Cache Age" display and
+  "Rebuild Songs Cache" button for manual rebuild with a progress dialog.
+
+**Files changed:** `resources/lib/library.py`, `service.py`,
+`resources/lib/router.py`, `addon.py`, `resources/settings.xml`,
+`resources/language/resource.language.en_gb/strings.po`
+(new strings #32785, #32786)
+
+---
+
+## Version 1.2.0j
+
+### Fix — Party Mode hangs then fails on large MySQL-backed libraries
+
+After finding audio files, `PartyQueueBuilder` called `_build_library_map()`
+which issued `AudioLibrary.GetSongs` to enrich queue items with metadata.
+On a large shared MySQL library this query takes 15–20+ seconds, killing
+the Kodi Python script invoker before playback could start, resulting in
+"No Items in Queue".
+
+**Fix:** Removed the library lookup entirely from Party Mode. Queue items
+are built directly from file paths using the filename stem as the title.
+Kodi reads full tags (artist, album, track, etc.) from the audio file at
+playback time, so the library lookup was unnecessary overhead.
+
+Removed: `_build_library_map()`, `_normalise_for_compare()` from `party.py`.
+
+**File changed:** `resources/lib/channels/party.py`
+
+---
+
+## Version 1.2.0i
+
+### Fix — Party Mode fails to find audio files (local and NAS paths)
+
+`PartyQueueBuilder` was calling `_walk()` imported from `folder.py`.
+That function only collects files matching `_MEDIA_EXTS` (video extensions:
+`.mkv`, `.mp4`, `.avi`, etc.), so audio files were silently excluded before
+the audio extension filter in `party.py` even ran. The folder was found
+correctly but `_walk` returned an empty list for any folder containing only
+audio files, whether local or on a NAS.
+
+**Fix:** Added `_walk_audio()` in `party.py` — an audio-specific walk that
+uses `xbmcvfs.listdir` (handles both local and SMB paths) and filters
+directly by `_AUDIO_EXTS`. The redundant post-walk audio filter is removed.
+The shared `_walk` in `folder.py` is unchanged.
+
+**File changed:** `resources/lib/channels/party.py`
+
+---
+
+## Version 1.2.0h
+
+### Fix — AudioLibrary.GetSongs RPC error (audio channels broken)
+
+`AudioLibrary.GetSongs` was failing with `Invalid params` because `"songid"`
+was listed in the `properties` array. In Kodi 21, `songid` is returned
+automatically in every song result and is not a valid requestable property.
+Removing it from the properties list resolves the RPC error and allows audio
+channels to build their queues correctly.
+
+**File changed:** `resources/lib/library.py`
+
+### Fix — Move Up / Move Down missing from Side Panel context menu
+
+Move Up and Move Down were implemented in `channel_manager.py` and wired
+into the old `channels.py` list view, but were never added to the Side Panel
+context menu. Added both options to `_show_context_menu` in `side_panel.py`,
+calling `manager.move_channel_up()` / `move_channel_down()` directly and
+refreshing the channel list with focus following the moved channel.
+
+**File changed:** `resources/lib/ui/side_panel.py`
+
+---
+
+## Version 1.2.0g
+
+### Removed — Soft Stop feature
+
+Soft-stop allowed a scheduled block to end early when a wall-clock time
+was reached. It was removed because Kodi's playlist transition is atomic:
+by the time `onPlayBackEnded` fires and we can check the time, Kodi has
+already started the next block item. No reliable in-process mechanism exists
+to interrupt that transition without risking a deadlock or race condition.
+
+The block scheduling feature works correctly without soft-stop:
+
+- Blocks fire at the configured time and play exactly `item_count` episodes
+- When the last block item finishes, the regular target channel content
+  resumes naturally via Kodi's playlist
+- A1, A2, A3 test scenarios all confirmed passing
+
+**Removed from:** `resources/lib/scheduler.py` (`on_block_item_complete`
+soft-stop check, `_strip_remaining_block_items`, `_soft_stop_reached`),
+`service.py` (soft-stop flag, `onPlayBackStopped` strip block,
+`onPlayBackEnded` stop thread), `resources/lib/ui/schedule_wizard.py`
+(Step 7 soft-stop input, related string constants and conflict-checker
+soft-stop branch).
+
+---
+
+## Version 1.2.0f
+
+### Fix — schedule conflict checker: real block duration + Rule 2 correction
+
+**Fix 1 — Rule 1: conflict window now uses actual episode durations**
+
+The target channel overlap check used a flat 120-minute default window
+when no `soft_stop_time` was set. This blocked valid schedules that
+started well after the actual block would have finished — e.g. 45 minutes
+of content at 07:00 was blocking a schedule at 09:00.
+
+New behaviour: `_estimate_block_duration()` reads the source channel's
+queue file, sums the actual `duration` field of the first `item_count`
+real (non-silent) items, and adds a 15-minute buffer. Example: 2 Til Death
+episodes at ~21 minutes each = 43 minutes + 15 minute buffer = 58 minute
+window. A schedule at 07:00 now only blocks until 07:58, so 08:00 is
+accepted. Falls back to `item_count × 30 minutes + 15` if the queue is
+unreadable or items have no duration data. Both the new schedule's window
+and the existing schedule's window use the same real-duration calculation.
+
+**Fix 2 — Rule 2: same source allowed when same target**
+
+Rule 2 previously blocked any two schedules from sharing the same source
+channel unconditionally. The correct rule is: same source is only blocked
+when the two schedules target *different* channels. Two schedules on the
+*same* target channel may share a source — they fire at different times
+and the source channel's normal top-up cycle replenishes its queue between
+fires. Same source targeting different channels remains blocked.
+
+**New method:** `_estimate_block_duration(source_id, item_count)`
+**File changed:** `resources/lib/ui/schedule_wizard.py`
+
+---
+
+## Version 1.2.0e
+
+### Fix — addon appearing in Music addons section
+
+The `<provides>` tag in `addon.xml` incorrectly declared `audio` alongside
+`video`, causing Kodi to list the addon in both Video addons and Music addons.
+This was introduced in 1.2.0a when the audio channel feature was added.
+
+The `audio` declaration is not required for audio channel playback — audio
+files play through Kodi's standard player via the video addon path. The addon
+ID (`plugin.video.*`) already correctly identifies it as a video addon.
+
+**Fix:** removed `audio` from `<provides>video audio</provides>` →
+`<provides>video</provides>`.
+
+**File changed:** `addon.xml`
+
+---
+
+## Version 1.2.0d
+
+### Feature — Audio channel Artist/Album/Song picker, Balanced shuffle,
+###           Channel Info audio/party branches, context menu cleanup
+
+**1 — Artist → Album → Song picker (audio wizard, `ui/channels.py`)**
+
+When creating or editing an Audio channel with "Filter by Artist" mode,
+the wizard now presents three levels of selection instead of one:
+
+- **Artist multiselect** (unchanged) — pick one or more artists from the
+  music library
+- **Album picker per artist** (new) — for each selected artist, a
+  multiselect of all their albums. Leave all ticked to include everything;
+  untick albums to exclude them entirely. Stored as `included_albums` dict
+  on the channel (artist name → list of album titles).
+- **Song exclusions (optional)** (new) — Yes/No gate, then artist → album
+  → song multiselect. Pre-selects currently excluded songs on edit.
+  Stored as `excluded_songs` list of songid ints on the channel.
+
+The Advanced Filter builder (mode 2) and Full Library (mode 3) are
+unchanged. Switching to either clears `included_albums` and
+`excluded_songs`.
+
+**2 — Balanced shuffle (`channels/audio.py`, `ui/channels.py`)**
+
+New "Balanced (equal artist airtime)" playback order option. Groups songs
+by primary artist, shuffles each group independently, then interleaves in
+round-robin with per-pass artist-order jitter. Artists with large
+catalogues no longer dominate a random channel. Stored as
+`audio_order="balanced"`. Pure Random and Album Order are unchanged.
+
+**3 — `included_albums` and `excluded_songs` applied at queue-build time
+(`channels/audio.py`)**
+
+`AudioQueueBuilder.build()` now applies both filters before ordering:
+- `_apply_included_albums()` — filters songs to only those whose album
+  appears in the `included_albums` selection for their artist
+- `excluded_songs` — removes songs whose `songid` is in the exclusion set
+
+**4 — `get_albums_for_artists()` (`library.py`)**
+
+New library method. Works from the cached `get_all_songs()` result — no
+extra JSON-RPC call. Returns dict mapping artist name → sorted album list.
+
+**5 — Channel Info audio and party branches (`ui/channels.py`)**
+
+Channel Info now has dedicated branches for audio and party channels
+instead of falling through to the TV branch with empty data.
+
+Audio branch shows: channel type label, playback order, recycle setting,
+content mode (Artist / Advanced Filter / Full Library), artist list with
+all albums indented underneath each artist, excluded song count.
+
+Party branch shows: channel type label, folder path, recycle setting.
+
+**6 — Context menu cleanup (`ui/channels.py`, `ui/schedule_wizard.py`)**
+
+- **Add Schedule** suppressed for audio and party channels (context menu).
+  Audio/party channels also removed from the schedule wizard target
+  channel picker — they cannot be schedule targets.
+- **Manage Interleave** suppressed for audio and party channels (was
+  already suppressed for serial). Interleave is not supported for
+  audio or party channel types.
+
+**New strings:** #32772–#32784 (next free: #32785)
+**Files changed:** `resources/lib/channels/audio.py`,
+`resources/lib/library.py`, `resources/lib/ui/channels.py`,
+`resources/lib/ui/schedule_wizard.py`,
+`resources/language/resource.language.en_gb/strings.po`
+
+---
+
+## Version 1.2.0c
+
+### Fix — Carousel and Schedule Source channel conflict enforced at the UI level
+
+Previously, a channel could simultaneously have carousel enabled AND be
+configured as a schedule source channel. The carousel would silently drain
+the same queue the scheduler depends on for block items, causing the source
+channel's queue and state to become inconsistent.
+
+The 1.2.0b fix to `carousel.py` skipped the pop at runtime but left the
+user able to configure this invalid combination without any warning.
+
+**Three-layer fix:**
+
+**1 — `carousel.py` (runtime guard, retained from 1.2.0b):** `check_all()`
+builds a set of all active schedule source channel IDs and skips any
+carousel channel whose ID is in that set. Log line:
+`"[Carousel] check_all: skipping '...' — active schedule source channel"`
+
+**2 — Channel wizard (`ui/channels.py`):** When editing a channel that is
+currently configured as a source in any active schedule, the carousel step
+(Step 8) is blocked entirely. The user sees an informational dialog
+(string #32770) explaining why carousel is unavailable on this channel,
+and `carousel_enabled` is forced to False.
+
+**3 — Schedule wizard (`ui/schedule_wizard.py`):** The source channel
+picker (Step 3) excludes any channel that has `carousel_enabled=True`.
+If any channels were excluded for this reason, a brief informational
+dialog (string #32771) is shown before the picker so the user understands
+why those channels don't appear.
+
+**New strings:** #32770, #32771
+**Files changed:** `resources/lib/carousel.py`,
+`resources/lib/ui/channels.py`,
+`resources/lib/ui/schedule_wizard.py`,
+`resources/language/resource.language.en_gb/strings.po`
+
+---
+
+## Version 1.2.0b
+
+### Fix — target channel resumes at wrong episode after scheduled block
+
+Port of the 1.1.9u + 1.1.9v fixes to the 1.2.0 branch. Two guards added,
+both absent from 1.2.0a.
+
+**Fix 1 — `_recalculate_tail` guard** (`channel_manager.py`):
+After a scheduled block finished playing, the target channel resumed at
+the wrong episode (e.g. S02E09 instead of S01E04). Root cause: during the
+block hand-off, `start_channel()` → `build_queue()` →
+`_resume_from_existing_queue()` called `_recalculate_tail()` on the
+hand-off disk queue which contained block items from the source channel
+prepended to the regular tail. The block items belong to a different show
+(not in the target channel's `shows[]`) and are skipped by the guard's
+`_simulated` count — but the regular tail episodes (e.g. ~28 of them)
+greatly outnumber `existing_show_index` (e.g. 3, one per episode played
+before the block). The guard therefore failed (`3 < 28`) and
+`_recalculate_tail` overwrote the correct `advance_show` tail state with
+indices derived from the full tail, causing the next `_topup_queue` to
+resume at the wrong episode. Fix: early-return from `_recalculate_tail`
+when the queue contains any items with `_schedule_id` set.
+
+Confirmed in 1.1.9v (July 21 log): `"_recalculate_tail: skipping —
+queue contains scheduled block items (tail preserved from advance_show)"`
+fired at the hand-off, channel correctly resumed at S01E04 and played
+forward through S01E07, S01E12, S01E18 over an overnight run.
+
+**Fix 2 — boundary top-up skip guard** (`service.py`):
+At the hand-off boundary, `_update_queue_file` was firing a threshold
+top-up while `_pending_block_reload` was set. This was wasted work —
+the imminent `start_channel()` call does its own correct top-up from the
+clean disk queue. Fix: when `_need_topup` is True and
+`_pending_block_reload is not None`, skip the top-up and log
+`"_update_queue_file: skipping top-up — block reload pending"`. The
+hand-off's own top-up handles everything correctly.
+
+**Files changed:** `resources/lib/channel_manager.py`, `service.py`
+
+---
+
+## Version 1.2.0a
+
+### New features: Audio Channels, Party Mode, Channel Sort Order
+
+**Audio Channel** — new `audio` channel type backed by the Kodi music
+library. Supports artist picker, genre/year/rating/played-status filters
+with `<`, `>`, `=` operators, and random or album-order playback. Songs
+play through the existing queue machinery with full Coming Up Next overlay
+support (separate audio CUN settings: lead time in seconds, display
+duration, minimum song length). No carousel or interleave.
+
+**Party Mode Channel** — new `party` channel type. User selects a folder
+of audio files (mp3, flac, m4a, aac, ogg, wma, wav, opus, alac, ape);
+all files play in random order. Files that match songs in the Kodi music
+library automatically receive full metadata (title, artist, album, art,
+duration). Files not in the library fall back to filename-stem display.
+Path matching normalises UNC, SMB, and %20-encoded paths before
+comparing so NAS library paths match correctly.
+
+**Channel Sort Order** — two new ways to reorder channels:
+- "Move Up" / "Move Down" context menu on every channel (instant,
+  persisted to channels.json)
+- "Sort Channels A–Z" action button in Settings → Channels, with
+  yes/no confirmation dialog
+
+**Poll timer fix for audio** — the existing poll timer fires at
+`resume_poll_interval × 60` seconds (default 5 min), which means
+it never fires for a 3-minute song. Audio and party channels now
+use a 10-second poll interval. Video channels unchanged.
+
+**Audio Coming Up Next** — four new settings in the Coming Up Next
+category: `cun_audio_enabled`, `cun_audio_lead` (seconds before end,
+default 20), `cun_audio_duration` (overlay duration, default 15s),
+`cun_audio_min_duration` (minimum song length, default 60s). Independent
+of the existing video CUN settings.
+
+**Folder default duration unit fix** — `folder_default_duration` was
+previously treated as minutes (×60). It is now treated as seconds
+directly. Default changed from 20 (minutes) to 120 (seconds) — same
+effective value for users who left it at the default. **If you set a
+custom value (e.g. 5 meaning "5 minutes"), update it to the equivalent
+seconds value (300) after this upgrade.**
+
+**Schedule wizard** — audio and party channels are excluded from the
+source channel picker.
+
+**addon.xml** — description, summary, forum URL, website, and `provides`
+tag updated for repo submission.
+
+**Files changed:** `resources/lib/library.py`,
+`resources/lib/channels/audio.py` (NEW),
+`resources/lib/channels/party.py` (NEW),
+`resources/lib/channels/folder.py`,
+`resources/lib/player.py`,
+`resources/lib/channel_manager.py`,
+`service.py`,
+`resources/lib/overlays/coming_up_next.py`,
+`resources/lib/ui/channels.py`,
+`resources/lib/ui/schedule_wizard.py`,
+`resources/lib/router.py`,
+`addon.py`,
+`resources/settings.xml`,
+`resources/language/resource.language.en_gb/strings.po`,
+`addon.xml`, `CHANGELOG.md`, `README.md`
+
+---
+
+## Version 1.1.9t
+
+### Feature — "Once" schedules now support a specific fire date
+
+Previously, selecting "Once" as the schedule day would fire the block on
+whatever day the start time was next reached, with no way to target a
+specific future date. A "Once" schedule created on a Monday at 20:00
+would fire that same Monday evening even if the intent was Friday night.
+
+**Change:** When "Once" is selected in the schedule wizard, a new step
+asks for the target date in DD/MM/YYYY format. The date is validated
+(rejects invalid day/month/year combinations and past dates) and stored
+as `fire_date` on the schedule. The scheduler's `_should_fire_today()`
+now checks `fire_date == today` for Once schedules instead of returning
+True unconditionally.
+
+Backwards compatible: existing "Once" schedules without a `fire_date`
+field continue to fire on the next occurrence of the start time (old
+behaviour preserved via empty-string fallback).
+
+**Files changed:** `resources/lib/ui/schedule_wizard.py`,
+`resources/lib/scheduler.py`, `resources/language/resource.language.en_gb/strings.po`,
+`addon.xml`, `CHANGELOG.md`, `README.md`
+
+---
+
+## Version 1.1.9s
+
+### Three fixes: block-count de-dupe, folder capture repair, CUN display logging
+
+**1 — Skipped block items no longer double-count.** On this platform,
+pressing Next fires onPlayBackEnded nondeterministically (confirmed
+across the July 19-20 logs: fired in the 14:28 test, silent in later
+skips). When it fired, a skipped block item was counted twice — once by
+the skip loop, once by _handle_end — reaching item_count one item early
+(4/4 while item 4 was still playing in the 14:28 test). All completion
+counting now routes through a single service method,
+`_count_block_item()`, which suppresses an immediately consecutive
+repeat of the same (schedule_id, file). The de-dupe record resets on
+channel switch, fresh fire, and block hand-off. Known accepted edge:
+two ADJACENT block items with byte-identical file paths would
+single-count. This unblocks §7 soft-stop testing.
+
+**2 — Folder duration capture: queue update repaired.** Two stacked
+pre-existing (1.1.7-era) defects in
+`channel_manager.capture_folder_duration`, first exposed in the July 20
+folder test: (a) it called `self._read_queue_file()` — a method that
+never existed (AttributeError); (b) the except handler used
+`xbmc.LOGWARNING` but channel_manager never imported xbmc, masking the
+real error as "name 'xbmc' is not defined". Fixed with the canonical
+`self._load_json(self._queue_file_path(id), [])` read and a module-level
+`import xbmc` — which also un-masks four other except handlers in the
+file (lines that would previously have crashed while reporting errors).
+Companion NFO writing was always correct; the in-place queue item
+duration update now works too.
+
+**3 — Coming Up Next display logging.** The run() drain now logs
+"Coming Up Next: displayed overlay for '<title>'" when show_overlay()
+actually fires — previously only the queueing was logged, so overlay
+rendering could not be verified from the log.
+
+**Files changed:** `service.py`, `resources/lib/channel_manager.py`,
+`addon.xml`, `CHANGELOG.md`, `README.md`
+
+---
+
+## Version 1.1.9r
+
+### Fix — stale in-memory queue flushed back to disk at block hand-off
+
+The 13:45 test confirmed the 1.1.9q guard worked (the transient
+auto-advance item was ignored, no corrupt write) and CUN showed the
+block head correctly. But the finished episode still reappeared in the
+queue file, via a third mechanism the guard had been masking in 1.1.9p:
+
+The boundary rewrite and SmartPlayer's subsequent queue write serialize
+the **same list**, producing byte-identical JSON — so `content_changed`
+never fired and the service's in-memory queue silently kept the stale
+fire-time list (finished episode included). When the block head
+registered, `_update_queue_file(position=0)` flushed that stale list
+back to disk (log tell: "34 items on disk, 34 items in memory" vs the
+33-item boundary write). It also left memory offset by one from Kodi's
+playlist for the whole block, forcing forward-scan fallbacks on every
+position lookup.
+
+**Fix:** `_update_queue_file` now returns the exact list it wrote, and
+`_maybe_start_block_reload` syncs the in-memory queue to it (position 0,
+current file cleared) before starting the reload thread. Memory, disk,
+and the new Kodi playlist are the same list from the first moment of the
+new session — the stale copy ceases to exist, so there is nothing left
+to flush back. The cumulative-queue rule is unchanged within a playlist
+session; the reload is a new session. All other `_update_queue_file`
+callers ignore the return value.
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`, `README.md`
+
+---
+
+## Version 1.1.9q
+
+### Fix — flash-item race corrupted queue file; CUN showed wrong next item
+
+1.1.9p's boundary hand-off worked (confirmed in the 13:16 test log) but
+exposed two defects:
+
+**Defect 1 — transient auto-advance item registered.** Between the
+reload trigger and the block head starting, Kodi's playlist auto-advance
+briefly played the next regular episode. That transient item registered
+in `_check_now_playing` 263ms after the reload thread launched, which
+(a) overwrote SmartPlayer's freshly written queue file without block
+preservation (the pending flag was already consumed), and (b) pinned
+`_last_file` so the stale fire-time in-memory queue — still containing
+the finished episode — was written back to disk when the block head
+registered. Kodi's live playlist was correct; the disk file was not
+(finished episode would have replayed after the block on next open).
+
+**Fix:** `_block_reload_guard` — armed in `_maybe_start_block_reload`
+with the expected block head file before the pending flag is consumed.
+While armed, `_check_now_playing` ignores every registration except the
+block head (basename match); 15s timeout failsafe registers normally if
+the reload never lands. The guard is cleared by: block head registering,
+timeout, manual channel switch, or a true user stop. The
+`content_changed` pending-set branch is skipped while the guard is armed
+so the addon's own rewrites cannot re-trigger the reload. A manual
+channel switch now also clears any pending reload.
+
+**Defect 2 — Coming Up Next read file order, not play order.** With a
+block waiting, the queue file is `[block..., current, next...]` but the
+block plays after the current item. `_get_next_episode` returned the
+file-order next item (the target's own next episode) instead of the
+block head.
+
+**Fix:** when `_pending_block_reload` is set and the current item is
+regular content, `_get_next_episode` returns the first non-silent
+leading block item. During block playback file order equals play order,
+so the normal path is unchanged.
+
+Also: `_basename_match()` promoted to a module-level helper (was a
+closure) — now shared by the guard check and the content_changed
+suppression path.
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`, `README.md`
+
+---
+
+## Version 1.1.9p
+
+### Fix — scheduled block hand-off at the natural item boundary (4 root causes)
+
+The 07:30 test log confirmed the block was written to disk correctly but
+never played, and the block items were stripped from the queue file at the
+first item transition. Code review during the fix found two additional
+latent bugs that fully explain the failure chain.
+
+**Bug 1 — onPlayBackEnded UnboundLocalError (latent, affected ALL
+channels):** `svc` was referenced before assignment, so every natural item
+end raised UnboundLocalError before `_handle_end()` and the queue-position
+increment could run. State advancement silently fell back to skip
+detection; interleave counters and natural-end resume clears never fired.
+The traceback carried no addon tag, so filtered logs never showed it.
+Fixed by binding `svc = self._service_ref` before first use.
+
+**Bug 2 — block items stripped from disk:** `_update_queue_file` trimmed
+the queue to the current position, discarding the freshly prepended block
+items (33 → 28 items in the log). While `_pending_block_reload` is set,
+the leading run of `_schedule_id` items is now preserved at the front of
+the written file, and the position is re-seeded to the true index of the
+playing file when the fire is detected, so the unplayed tail is computed
+correctly.
+
+**Bug 3 — reload drain could never fire:** Kodi playlist auto-advance
+never reports `isPlaying()==False`, so the `run()` drain condition was
+unreachable — and its call target `self.player.start_channel()` does not
+exist on PlaybackMonitor (it lives on SmartPlayer), so it would have
+raised AttributeError anyway. The drain is removed. The hand-off now
+happens in the new `PlaybackMonitor._maybe_start_block_reload()`, called
+from `onPlayBackEnded` after the position increment: it rewrites the disk
+queue (block items + unplayed tail), clears the pending flag, and calls
+`SmartPlayer.start_channel()` from a short worker thread. `build_queue()`
+resumes from the rewritten disk queue, so the block plays first and
+regular content follows.
+
+**Bug 4 — block completion tracking relocated:** the old completion call
+site in `_check_now_playing` only appeared to work because Bug 1 left the
+position tracking stale; with tracking restored it could never fire.
+Natural block-item completions are now counted in `_handle_end` (which
+also skips show/movie state advancement for block items — they belong to
+the source channel), and block items skipped past by the user while the
+block is playing are counted as consumed in the skip loop. Pre-reload
+block items in the skip range are still ignored, as before.
+
+**Behaviour changes:**
+- A deliberate user stop now cancels the pending block reload instead of
+  restarting playback; the block stays at the front of the disk queue and
+  plays on the next channel open.
+- Guard added so the addon's own post-reload queue rewrite cannot
+  re-trigger the reload in a loop; a stale pending flag is cleared when a
+  block item registers as playing.
+- At the boundary, Kodi's auto-advance may briefly start the next regular
+  episode before the block replaces it (sub-second, platform dependent).
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`, `README.md`
+
+---
+
+## Version 1.1.9o
+
+### Fix — restore wait-for-episode-end before block starts
+
+1.1.9n removed the `not self.player.isPlaying()` guard, causing the
+block to cut mid-episode. Restored. The block waits for the current
+episode to finish naturally before starting — the same behaviour as
+all previous versions intended.
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9n
+
+### Change — scheduled block fires immediately like a manual channel switch
+
+The `_pending_block_reload` drain in `run()` previously waited for
+`not self.player.isPlaying()` before calling `start_channel()`. This
+meant the block could start up to 22 minutes late (one full episode
+after the scheduled time), which is not acceptable for scheduled
+programming.
+
+**Fix:** removed the `not self.player.isPlaying()` guard. The drain
+now fires on the next service tick after `_pending_block_reload` is
+set — exactly like pressing play on a different channel manually.
+The current episode stops and the first block item starts
+immediately. The delay between the scheduled time and block start is
+at most 60 seconds (one service tick).
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9m
+
+### Fix — block items falsely detected as skipped, stripped from queue
+
+When `fire_block()` wrote block items to the front of the target
+queue while the channel was playing, `content_changed` reloaded
+`self._queue` with the new 15-item queue (6 block items + 9 regular
+items). `_check_now_playing` then scanned for the currently-playing
+file — which was now at position 6 instead of 0. The skip detector
+saw `new_position=6, last_position=0` and treated all 6 block items
+as skipped episodes, advancing their state and then trimming the
+queue to position 6 onward — discarding all block items from both
+memory and the queue file.
+
+**Two fixes:**
+
+1. **Skip loop guard** — in the skip advancement loop, items tagged
+   `_schedule_id` are ignored with a `continue`. They are not real
+   skips; advancing their state would incorrectly mark source-channel
+   episodes as played.
+
+2. **content_changed block reload** — when `content_changed` fires
+   and `self._queue[0]` has `_schedule_id` and the channel is
+   playing, `_pending_block_reload` is set immediately and
+   `self._current_file` is set to the currently-playing file. This
+   causes `_check_now_playing` to return early (file already
+   registered) without scanning the new queue, preventing the false
+   skip detection entirely. The block starts playing at the next
+   natural item boundary when `_pending_block_reload` drains.
+
+**Expected log sequence after this fix:**
+1. `fire_block: target queue 9 -> 15 items`
+2. `Queue file content changed`
+3. `content_changed: scheduled block at queue[0] — pending reload`
+4. (current episode plays to natural end)
+5. `_handle_end: scheduled block detected at queue[0] — pending reload`
+6. `run: starting block reload for channel '...'`
+7. Block content starts playing seamlessly
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9l
+
+### Fix — scheduled block never fires while target channel is playing
+
+The 1.1.9k `_pending_block_reload` mechanism was correct but never
+triggered because `fire_block()` was gated behind check 5: "is the
+target channel currently playing? If so, defer." Since the channel
+was always playing, `fire_block()` never ran, block items were never
+written to the queue file, `self._queue[0]` never got `_schedule_id`,
+and `_pending_block_reload` was never set.
+
+**Root cause:** check 5 was added as a courtesy to avoid writing to
+the queue file while playing — but `fire_block()` only writes to the
+queue file on disk. It does not touch Kodi's in-memory playlist.
+Writing to the queue file while the channel is playing is completely
+safe: `content_changed` in `_check_now_playing` detects the change
+on the next tick, reloads `self._queue` in memory with block items
+at front, and `_handle_end` sets `_pending_block_reload` at the next
+natural item boundary — exactly as designed.
+
+**Fix:** removed check 5 entirely. `fire_block()` now always runs
+when checks 1-4 pass, regardless of whether the target channel is
+playing. The seamless block insertion path (Option C) in 1.1.9k then
+handles the playlist swap at the next natural episode boundary.
+
+**Expected log sequence after this fix:**
+1. `all checks passed, firing block` — at 22:00 tick
+2. `target queue 30 -> 34 items` — queue file updated on disk
+3. `Queue file content changed` — detected within 1 second
+4. (episode plays to natural end)
+5. `scheduled block detected at queue[0] — pending reload`
+6. `run: starting block reload for channel '...'`
+7. Block content starts playing seamlessly
+
+**Files changed:** `scheduler.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9k
+
+### Fix — scheduled block items not playing when channel already active
+
+When a schedule fired while the target channel was playing, block
+items were correctly prepended to the queue file on disk but the
+currently-running Kodi playlist was never updated. The channel
+continued playing its original content, skipping the block entirely.
+The user had to manually stop and restart the channel to see block
+items.
+
+**Root cause:** `content_changed` in `_check_now_playing` detects
+queue file changes and reloads `self._queue` in memory, but does NOT
+rebuild Kodi's in-memory playlist. Kodi plays through its own
+playlist sequentially, never re-reading the queue file between items.
+
+**Fix — Option C (seamless, no interruption):**
+
+At the end of `_handle_end`, after all state advancement for the
+finished item, a check runs: if the finished item was NOT a block
+item (regular channel content) AND `self._queue[0]` now has
+`_schedule_id` (block items are waiting at the front), set
+`self._pending_block_reload` to the current channel dict.
+
+In `run()`, after the `_pending_exhausted_channel` drain, when
+`_pending_block_reload` is set and `not self.player.isPlaying()`,
+`start_channel()` is called with the pending channel. At this point
+the previous item has finished naturally so `start_channel()` starts
+the block content from position 0 with no interruption to the user
+— the current episode plays to its natural end, then scheduled
+content begins.
+
+**Regression guards:**
+- Flag only set when `_queue[0]` has `_schedule_id` — never fires
+  for normal channels with no schedule
+- `_finished_is_block` guard prevents re-triggering after each
+  block item completes — block items play through via existing path
+- Drain only fires when `not isPlaying()` — never interrupts
+  mid-episode
+- Serial, carousel, folder, movie channels: unaffected (no
+  `_schedule_id` on their items)
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9j
+
+### Fix — soft-stop not enforced when user manually stops playback
+
+When a scheduled block was active and the soft-stop time passed,
+stopping playback manually (instead of letting the current item
+finish naturally) left the remaining block items in the target queue
+indefinitely. The soft-stop was only checked on natural item
+transitions, not on user-initiated stops.
+
+**Fix:** added a soft-stop check to `onPlayBackStopped` in
+`service.py`. After the resume save logic, if a scheduled block is
+active on the stopped channel AND `soft_stop_time` is set AND the
+soft-stop time has been reached, `_strip_remaining_block_items()` is
+called and the block is cleared — exactly as if the item had finished
+naturally past the deadline.
+
+Blocks without a soft-stop are left intact on manual stop so they
+resume correctly on the next play. Only soft-stop blocks are cleared
+on stop when the deadline has passed.
+
+**Architecture note:** this hook is in `service.py` (owns all
+playback callbacks). `_strip_remaining_block_items()` and
+`clear_active_block()` are called on `scheduler.py` and
+`channel_manager.py` respectively — no ownership rules violated.
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9i
+
+### Fix — remaining block items not removed on soft-stop or early end
+
+When a scheduled block ended early (soft-stop time reached, or
+items_played < item_count for any other reason), the un-played block
+items remained at the front of the target channel queue and continued
+playing as if they were regular channel content.
+
+**Root cause:** `on_block_item_complete()` cleared `active_block` from
+state.json but did not touch the queue file. The remaining source items
+sitting in the target queue had no mechanism to remove them.
+
+**Fix:** when `block_done` is True and `items_played < item_count`,
+`_strip_remaining_block_items()` is called before clearing the block
+state. It walks the front of the target queue and removes any items
+tagged `_schedule_id == schedule_id` (written by `fire_block` and
+preserved through `_write_now_playing` since 1.1.9g). It stops at
+the first untagged item so regular channel content is never affected.
+
+Normal block completion (all items played) is unaffected — no items
+remain to strip, so `remaining_block_items == 0` and the strip is
+skipped.
+
+**Files changed:** `scheduler.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9h
+
+### Fix — stale active_block blocks schedule from re-firing
+
+After editing a schedule's time (which resets last_fired to 0),
+the scheduler correctly saw last_fired == 0 and attempted to fire —
+but was blocked by an existing active_block key in state.json left
+from a previous block that never got cleared (pre-1.1.9f behavior).
+The `block already active` check fired and the schedule never ran.
+
+Two staleness conditions are now detected and cleared before the
+`block already active` guard blocks the fire:
+
+1. **last_fired == 0**: the wizard reset it because a scheduling-
+   relevant field changed. Any existing active_block is from a
+   superseded config and should be discarded.
+
+2. **inserted_at from a previous calendar day**: a real block cannot
+   span midnight. If the block was inserted yesterday (e.g. after a
+   crash or Kodi restart without block completion), it is abandoned
+   and cleared so today's schedule can fire normally.
+
+In both cases the stale block is cleared and the schedule proceeds
+to fire. A log line confirms which staleness condition was detected.
+
+**Files changed:** `scheduler.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9g
+
+### Fix — editing schedule time blocked by same-day last_fired
+
+After a schedule fired, editing it to move the start time forward
+and waiting for the new time would show `already fired today` and
+not re-fire. `last_fired` from the earlier fire was preserved
+unchanged by the wizard, so `_already_fired_today()` blocked it.
+
+Fix: in `schedule_wizard.py`, if the start time, day, or source
+channel changes on edit, `last_fired` is reset to 0 in the saved
+definition so the schedule can fire again at the new time. Edits
+to name, item count, soft stop, or target channel alone do not
+reset `last_fired`.
+
+### Fix — block completion hook never fired (from 1.1.9f)
+
+`_schedule_id` was stripped by `_write_now_playing()` field
+whitelist, so `service.py` never saw it in `self._queue` and
+`on_block_item_complete()` was never called. Fixed by preserving
+`_schedule_id` in both the TV and movie branches of
+`_write_now_playing()`.
+
+**Files changed:** `ui/schedule_wizard.py`, `player.py`,
+`addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9f
+
+### Fix — block completion hook never fired
+
+When a scheduled block played, `on_block_item_complete()` was never
+called and `active_block` was never cleared from state.json.
+
+**Root cause:** `_write_now_playing()` in `player.py` normalizes every
+queue item through a strict field whitelist before writing the queue
+file to disk. `_schedule_id` was not in that whitelist, so it was
+silently stripped when the channel started playing. `service.py`
+populates `self._queue` by reading the queue file from disk, so
+`self._queue` never had `_schedule_id` on any item. The block
+completion check in `_check_now_playing` reads
+`_prev_item.get("_schedule_id")` — always None — so the hook
+never fired.
+
+**Fix:** added `_schedule_id` preservation to both the TV episode
+and movie branches of `_write_now_playing()`, following the same
+conditional pattern used for `_interleaved` and `_silent`.
+
+**Files changed:** `player.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9e
+
+### Fix — scheduler.py bypassing channel_manager ownership rule
+
+`fire_block()` was calling `channel_manager._save_json()` and accessing
+`channel_manager._schedules_path` directly to update `last_fired` and
+deactivate once-only schedules — bypassing the public `update_schedule()`
+method that `channel_manager.py` already owns for all schedules.json I/O.
+
+This violated the no-duplicate-code rule: `channel_manager.py` owns all
+schedules.json reads and writes; nothing else should access that file
+directly.
+
+Fix: replaced the raw `_save_json` call with `channel_manager.update_schedule()`.
+One method call replaces three lines of direct file access.
+
+**Files changed:** `scheduler.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9d
+
+### Diagnostic — add success log line to set_active_block
+
+`set_active_block` had no success confirmation in the log — only an
+error branch. Added a log line confirming the key written and the
+`items_played`/`item_count` values so block state writes are visible
+in kodi.log for debugging.
+
+No logic changes. The `active_block` key in state.json was being
+written correctly; the absence of a log line was purely an
+observability gap.
+
+**Files changed:** `channel_manager.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9c
+
+### Fix — "Add Schedule" missing from Side Panel context menu
+
+"Add Schedule" appeared in the standard channel list context menu
+(via `ui/channels.py`) but not in the Side Panel context menu, which
+maintains its own separate options list in `ui/side_panel.py`.
+
+Fix: added `_S_CTX_ADD_SCHEDULE = 32686` constant, the entry to the
+options list, and an `add_schedule` handler to `_show_context_menu()`.
+The wizard runs directly on the panel thread (same pattern as
+`edit_channel` and `manage_interleave`) so the panel stays open and
+the schedule is saved without any RunPlugin round-trip.
+
+**Files changed:** `ui/side_panel.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9b
+
+### Fix — Schedule block items ignored on channel play
+
+When a schedule fired and prepended source items to the target queue,
+opening the Side Panel showed the block items correctly. But pressing
+Play rebuilt the queue from scratch, ignoring the block items entirely
+and playing the original target channel content.
+
+**Root cause:** `_resume_from_existing_queue()` checks queue ownership
+by reading `first_item.get("channel_id") or first_item.get("_channel_id")`.
+`fire_block()` set `_channel_id = target_id` on block items but did not
+set `channel_id` — which kept the source channel's ID from the original
+item dict. The `or` expression short-circuits on the first truthy value,
+so `channel_id` (source ID ≠ target ID) was read, the ownership check
+failed, and `_resume_from_existing_queue()` returned `None`, forcing a
+fresh queue build that discarded all block items.
+
+**Fix:** `fire_block()` now sets both `channel_id` and `_channel_id` to
+`target_id` on every block item. One line added in `scheduler.py`.
+
+**Files changed:** `scheduler.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.9a
+
+### Feature — Channel Scheduling
+
+Schedule a source channel's content to play on a target channel at a
+recurring day/time.  Blocks play as the next N items on the target channel;
+when the block finishes (or a soft-stop time is reached) the regular queue
+resumes naturally.
+
+**How it works:**
+
+- **Soft-start:** the block fires at or after the configured start time
+  but waits for the current item to finish before inserting.  The 60-second
+  service tick defers firing while the target channel is active; the check
+  runs again on the next tick after the item ends.
+- **Soft-stop:** an optional wall-clock time after which the block ends
+  early, even if `item_count` has not been consumed.
+- **Block insertion:** source items are prepended to the target queue.
+  Regular queue items are pushed back and play naturally after the block —
+  no items are dropped or displaced.
+- **Source channel advance:** source items consumed by the block are
+  removed from the source queue, exactly as if they had been watched on
+  the source channel directly.
+- **Once-only:** schedules with recurrence `"once"` deactivate themselves
+  automatically after firing.
+
+**Schedule Wizard (8 steps):**
+
+1. Schedule Name
+2. Target Channel (pre-selected when opened from context menu)
+3. Source Channel (target excluded from options)
+4. Day — Daily / Weekdays / Weekends / Mon–Sun / Once
+5. Start Time — HH:MM 24-hour input with format validation
+6. Item Count — 1–50, default 4
+7. Soft Stop Time — optional HH:MM; must be after start time
+8. Confirm — summary dialog
+
+**Manage Schedules screen:** Settings → Manage Schedules.
+Lists all schedules with [ACTIVE]/[OFF] prefix.  Per-schedule actions:
+Edit (re-runs wizard pre-filled), Toggle Active/Inactive, Delete.
+
+**Conflict checking (at save time):**
+
+1. Target channel: no two active schedules may overlap on the same day/time.
+   Overlap window defaults to 2 hours when no soft-stop time is set.
+2. Source channel: may only appear in one schedule at a time.
+
+**Data model:**
+
+- `schedules.json` — stored in addon profile / shared storage path.
+  Absent = no schedules; all reads use `.get()` with safe defaults.
+- `sch_<id>:active_block` key in `state.json` — tracks block progress
+  across Kodi restarts.
+
+**Architecture:**
+
+- `resources/lib/scheduler.py` — NEW.  Mirrors `carousel.py` exactly.
+  `ScheduleManager.check_all()` called every 60 s from service.py tick
+  loop alongside carousel check.  Never writes queue files directly.
+- `resources/lib/ui/schedule_wizard.py` — NEW.  Wizard + Manage screen.
+- `channel_manager.py` — `schedules.json` CRUD, active_block state helpers,
+  `SCHEDULES_FILE` constant, `_schedules_path` init.
+- `service.py` — scheduler check in tick loop + startup catch-up;
+  block item completion hook in `_check_now_playing`.
+- `ui/channels.py` — "Add Schedule" context menu entry on every channel.
+- `router.py` — `add_schedule`, `manage_schedules` actions.
+- `addon.py` — dispatch table additions.
+- `settings.xml` — "Manage Schedules" action button in Channels category.
+- `strings.po` — #32686–#32726.
+
+**Backwards compatibility:** schedules.json absent = no schedules.
+Existing channels, queues, and state.json are unaffected until a schedule
+fires.
+
+**Files changed:** `scheduler.py` (NEW), `ui/schedule_wizard.py` (NEW),
+`channel_manager.py`, `service.py`, `ui/channels.py`, `router.py`,
+`addon.py`, `settings.xml`, `strings.po`, `addon.xml`, `CHANGELOG.md`,
+`README.md`
+
+---
+
+## Version 1.1.8m
+
+### Fix — Channel Logo Overlay: premature dismiss on OSD close
+
+Logo disappeared when the user pressed Escape/Back to close the OSD.
+Two causes fixed:
+
+1. **`onPlayBackEnded` was calling `hide_permanent()`** — removed.
+   The timed logo manages its own lifetime; hiding on natural episode
+   end was wrong. When the next item starts, `show()` cancels and
+   reshows automatically. `hide_permanent()` now only fires from
+   `onPlayBackStopped`.
+
+2. **`onPlayBackStopped` fires transiently on some Kodi builds** during
+   OSD skip/seek interactions even though playback continues. Added
+   `isPlaying()` guard: `hide_permanent()` only called when playback
+   has actually stopped.
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8l
+
+### Fix — Channel Logo Overlay: show on every new item, not just channel change
+
+Logo was not appearing when the user skipped to the next episode because
+`service.py` only called `show()` when `primary_channel_id` changed.
+Skipping within the same channel doesn't change the channel ID.
+
+Fix: removed `_logo_channel_id` tracking. `show()` is now called on
+every `_check_now_playing` fire (every new item). The timed window
+auto-dismisses after the configured duration, so there is no cost to
+showing it on each item — it behaves exactly like Coming Up Next.
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8k
+
+### Rework — Channel Logo Overlay: timed display (Coming Up Next pattern)
+
+After extensive investigation including reading the PseudoTV source code,
+the persistent `WindowDialog` approach cannot work in our architecture.
+PseudoTV's channel bug works because their entire addon runs as a modal
+`WindowXMLDialog` that owns the input loop — they intercept all keypresses
+intentionally. Our addon runs as a background service alongside Kodi's
+native player, so a persistent `WindowDialog` always sits on the input
+stack and blocks keypresses regardless of what `onAction` does.
+
+**New approach: timed display**, matching `coming_up_next.py` exactly:
+- Logo appears for a configurable number of seconds when a channel starts
+  or changes, then auto-dismisses
+- No persistent window — gone before the user presses anything
+- No input interception, no threading complexity, no close/reopen cycles
+- New setting: **Display Duration (seconds)** — default 5s
+
+**Settings (Channel Logo category):**
+- Enable/disable, Corner, Size, Opacity, Margin (unchanged)
+- NEW: Display Duration (seconds) — default 5
+
+**strings.po:** #32685 added (Display Duration)
+
+**Files changed:** `overlays/logo_overlay.py`, `settings.xml`,
+`strings.po`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8j
+
+### Fix — Channel Logo Overlay: diagnostic logging in service.py
+
+Added log line `logo overlay: showing for channel=... icon=...` inside the
+logo block in `_check_now_playing` so it is immediately visible in kodi.log
+whether the block is reached and what icon is being shown.
+
+The logo not appearing in 1.1.8i was caused by the `logo_overlay_enabled`
+setting being reset to its default (`false`) when the addon was reinstalled
+fresh. Re-enabling it in Settings → Channel Logo Overlay restores normal
+behaviour. No code change required for that — this revision adds logging
+so the same scenario is instantly diagnosable from the log in future.
+
+**Files changed:** `service.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8i
+
+### Fix — Channel Logo Overlay: self-contained reshow thread
+
+**Root causes diagnosed from log:**
+
+1. **Logo never returned** — `_check_now_playing` only fires when a new
+   file is detected, not on a schedule. After a keypress-triggered hide,
+   nothing called it again for the same still-playing file, so the logo
+   never reshowed.
+
+2. **Two presses for OSD** — the close-first approach had a race: by the
+   time `executebuiltin("Action(Select)")` fired, the OSD activation was
+   racing with the window close.
+
+**Fix:** The overlay is now fully self-contained for input handling.
+
+- New `_hide_for_keypress()` method: closes the window and starts a
+  `threading.Timer` (600ms) that calls `_reshow()`.
+- `_reshow()` calls `show()` with the last known icon and settings —
+  no involvement from `service.py` required.
+- New `hide_permanent()` replaces `hide()` for service.py calls
+  (playback stop/ended). Sets `_permanent_hide = True` so the reshow
+  timer cannot fire after playback stops.
+- `show()` clears `_permanent_hide` so the logo correctly reappears
+  when a new channel starts after a stop.
+- `service.py`: removed `is_showing()` check (no longer needed),
+  renamed `hide()` → `hide_permanent()` at stop/ended call sites.
+
+**Expected behaviour:**
+- Press Enter → logo disappears, OSD opens on first press, logo
+  reappears ~600ms later when OSD is visible
+- Press Escape → OSD closes, logo reappears ~600ms later
+- Stop playback → logo disappears permanently
+
+**Files changed:** `overlays/logo_overlay.py`, `service.py`,
+`addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8h
+
+### Fix — Channel Logo Overlay: close-first input handling
+
+The fundamental problem: `WindowDialog` sits on top of Kodi's window
+stack and intercepts all input. `executebuiltin("Action(name)")` re-fires
+the action but Kodi routes it back to the same window — an infinite loop.
+
+Fix: `onAction` now calls `manager.hide()` first to remove the window
+from the stack, then fires `executebuiltin("Action(name)")`. With the
+window gone, the action reaches `VideoFullScreen` as intended. The OSD
+opens, Stop works, Escape works.
+
+`service.py` reshows the logo on the next `_check_now_playing` tick
+(within ~1 second) via an `is_showing()` check alongside the existing
+channel-change check. The logo reappears seamlessly after the OSD closes.
+
+**Files changed:** `overlays/logo_overlay.py`, `service.py`,
+`addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8g
+
+### Fix — Channel Logo Overlay: correct action name strings for executebuiltin
+
+1.1.8f called `xbmc.executebuiltin("Action({})".format(action.getId()))` which
+passed the raw integer ID (e.g. `Action(7)`, `Action(10)`). Kodi's `Action()`
+builtin requires the action **name string** (e.g. `Action(Select)`,
+`Action(PreviousMenu)`), not the numeric ID, producing:
+`Keymapping error: no such action '7' defined` for every keypress.
+
+Fixed by mapping the numeric IDs to their correct name strings for all
+actions a user is likely to press during video playback (Select, Stop,
+PlayPause, FastForward, Rewind, PreviousMenu, OSD, ShowInfo, etc.).
+Unmapped action IDs are silently ignored — the video player handles its
+own input independently for those.
+
+**Files changed:** `overlays/logo_overlay.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8f
+
+### Fix — Channel Logo Overlay: action forwarding corrected
+
+1.1.8e used `pass` in `onAction` which silently swallowed all keypresses
+including Back and Escape, making it impossible to stop playback or open
+the OSD.
+
+The correct fix is `xbmc.executebuiltin("Action({})".format(action.getId()))` —
+this re-fires every received action back into Kodi's normal routing so the
+video player underneath handles it as if the overlay wasn't there. Enter/OK
+opens the OSD, Back/Escape works normally, and the logo stays on screen
+until service.py dismisses it on playback stop.
+
+**Files changed:** `overlays/logo_overlay.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8e
+
+### Fix — Channel Logo Overlay: no longer intercepts keypresses
+
+`LogoOverlayWindow` now overrides `onAction` and `onClick` with no-ops.
+Previously the `WindowDialog` default handler silently absorbed all
+keypresses — Enter/OK could not open the Kodi OSD, and Back/Escape was
+required to dismiss the overlay before any remote input worked.
+
+The overlay is now fully transparent to input: Enter opens the Kodi OSD
+normally, Back/Escape works as expected, and the logo stays on screen
+until playback stops as intended. The overlay is dismissed only by
+`service.py` on `onPlayBackStopped`/`onPlayBackEnded` — never by user
+input.
+
+**Files changed:** `overlays/logo_overlay.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8d
+
+### Feature — Channel Logo Overlay (persistent watermark during playback)
+
+Displays the channel's icon as a persistent semi-transparent watermark
+in a configurable corner of the screen while content is playing. Behaves
+like a real broadcast channel bug.
+
+**Behaviour:**
+- Appears when a channel starts playing, stays for the entire item
+- Refreshes automatically when the channel changes (e.g. after a channel
+  switch — same overlay instance, new icon)
+- Hidden cleanly on playback stop or Kodi shutdown — no lingering windows
+- If the channel has no icon configured and no auto-match in the icon
+  folder, the overlay does not appear (no generic placeholder shown)
+- No effect on playback, resume, queue, or any other feature
+
+**Settings (new "Channel Logo" category):**
+- Enable/disable
+- Corner: Top Left / Top Right (default) / Bottom Left / Bottom Right
+- Size: Small (60px) / Medium (80px) / Large (100px) — default Medium
+- Opacity: Low (50%) / Medium (70%) / High (90%) — default Medium
+- Margin from screen edge (number, pixels, default 30)
+
+**Architecture:**
+- `overlays/logo_overlay.py` — NEW. Self-contained `xbmcgui.WindowDialog`,
+  no XML skin required. Owns all rendering. Never accesses state/queue.
+- `service.py` — show overlay after `set_now_playing` when channel icon
+  changes; hide on `onPlayBackStopped`/`onPlayBackEnded`
+- `channel_manager.resolve_channel_icon` already provides the icon path
+
+**Strings:** #32676–#32684 (next free: #32685)
+
+**Files changed:** `overlays/logo_overlay.py` (NEW), `service.py`,
+`settings.xml`, `strings.po`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8c
+
+### Fix — Channel icon folder: UNC path support + diagnostic logging
+
+**UNC path normalisation:**
+- Icon folder paths entered as `\\Server\share\path` are now converted
+  to `smb://Server/share/path` before being passed to `xbmcvfs`, which
+  requires Kodi VFS protocol format. Previously, UNC paths silently
+  failed all existence checks and fell through to the default icon.
+
+**Diagnostic logging added to `resolve_channel_icon`:**
+- Logs which resolution path was taken for every channel (manual icon,
+  folder match, or fallback) so icon problems are visible in kodi.log
+  without needing to instrument the code manually.
+
+**Files changed:** `resources/lib/channel_manager.py`, `addon.xml`,
+`CHANGELOG.md`
+
+---
+
+## Version 1.1.8b
+
+### Fix — Lower Third Ticker polish (layout, logging, item ordering, repetition)
+
+**Layout:**
+- Strip height increased 96→116px; top position adjusted (1080i: top=932)
+- Font sizes increased: phrase → font16, title → font20
+- Colors brightened: phrase → gold `FFFFD700`, title → white `FFFFFFFF`
+- Label widths widened to prevent truncation (phrase 900px, title 1350px)
+
+**Channel name moved to phrase line (402):**
+- Channel name no longer pinned hard-right in control 404 (always blank now)
+- For next-item entries: "Up Next on — Comedy TV" on line 1, title on line 2
+- For promo entries with `{channel}` in template: "Comedy TV presents" on
+  line 1, title on line 2
+- For promo entries without `{channel}`: "Catch it on — Comedy TV" on line 1
+
+**No repetition:**
+- `{show}` token stripped from phrase line — title lives exclusively in 403
+- `{channel}` token substituted in phrase line — 404 always empty
+- Show/movie title never appears in both the phrase and the title line
+
+**Logging:**
+- Each ticker item logged at build time: `#N | phrase_line | title`
+
+**Item ordering:**
+- Next-item and promo entries interleaved per channel before shuffle
+
+**Files changed:** `ui/side_panel.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8a
+
+### Fix — Lower Third Ticker polish (layout, logging, item ordering)
+
+**Layout:**
+- Strip height increased 96→116px; top position adjusted accordingly (1080i: top=932)
+- Phrase label (402) and title label (403) now display on one compound line each,
+  with wider widths to prevent truncation
+- Font sizes increased: phrase → font16, title → font20, channel name → font16
+- Colors brightened: phrase → gold `FFFFD700`, title → white `FFFFFFFF`,
+  channel name → cyan `FF00CCFF`
+- Left pane and right pane list heights adjusted for new strip height (1080i: 862)
+
+**Logging:**
+- Each ticker item now logged at build time:
+  `[Ticker] #N channel — phrase — title` for instant diagnosis
+
+**Item ordering:**
+- Next-item and show-promo entries are now interleaved per channel
+  (next-item first, then promo) before the full list is shuffled.
+  Prevents two entries for the same channel appearing adjacent with
+  contradictory content titles.
+
+**Files changed:** `ui/side_panel.py`,
+`resources/skins/Default/1080i/SmartChannels_Main.xml`,
+`resources/skins/skin.estuary/1080i/SmartChannels_Main.xml`,
+`addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.8a
+
+### Feature — Lower Third Ticker in Side Panel
+
+Adds a broadcast-style ticker strip at the bottom of the Side Panel window
+advertising upcoming content across all visible channels.
+
+**Ticker strip (control 400–404):**
+- Appears at the bottom of the side panel, above the footer hint bar
+- Dark semi-transparent background with a thin separator line above
+- Shows: channel icon (401), phrase label (402), content title (403),
+  channel name (404)
+- Rotates through all visible channels every 8 seconds
+- Background thread started in `onInit`, stopped cleanly in `onAction`
+  (Back/Escape) — no thread leaks
+
+**Two item types per channel:**
+- **Next-item**: advertises the next queued item (item[0] from queue file)
+  using a randomly chosen "next" phrase from `ticker_phrases.txt`
+- **Show promo**: advertises a random show/movie from the channel's own
+  configured content list using a randomly chosen "promo" phrase
+
+**Currently-playing channel** always shows "Now Playing on" — never a
+random phrase, always factually accurate.
+
+**Phrase file** (`ticker_phrases.txt` in addon profile / shared storage):
+- User-editable plain text file, one phrase per line
+- `[next]` section: phrases for next-item entries
+- `[promo]` section: phrases for show-promo entries (`{show}`, `{channel}`
+  tokens substituted at runtime)
+- `#` lines are comments; empty lines ignored
+- Created with sensible defaults on first panel open if absent
+
+**Settings:**
+- New toggle: "Show Ticker" (default: true) — hides the strip and
+  frees list height when disabled
+
+**Layout changes (all three skins):**
+- 1080i (Default, Estuary): list heights reduced 1010→882, right list
+  948→820; ticker at top=952 height=96
+- 720p (Confluence): list heights reduced 648→584, right list 604→540;
+  ticker at top=634 height=64
+
+**Strings:** #32672–#32675 (next free: #32676)
+
+**Files changed:** `ui/side_panel.py`, `resources/skins/Default/1080i/SmartChannels_Main.xml`,
+`resources/skins/skin.estuary/1080i/SmartChannels_Main.xml`,
+`resources/skins/skin.confluence/720p/SmartChannels_Main.xml`,
+`settings.xml`, `strings.po`, `addon.xml`, `CHANGELOG.md`, `README.md`
+
+---
+
+## Version 1.1.7d
+
+### Fix — multi-episode NFO files parsed as invalid XML, duration skipped
+
+Sonarr/Radarr writes multi-episode NFO files containing two consecutive
+`<episodedetails>` root elements in a single file (one per episode on the
+physical media). This is technically invalid XML — `ET.fromstring()` parses
+the first element successfully then throws `junk after document element`
+when it encounters the second, causing `_read_nfo_duration` to return 0
+and the episode to be skipped from the queue entirely.
+
+Fix: if the initial parse fails, strip the XML declaration, wrap the full
+content in a synthetic `<_root>` element, and retry. Both `<episodedetails>`
+blocks become valid children. `find(".//durationinseconds")` then locates
+the duration from the first episode (correct, since both episodes share the
+same physical file and duration). Single-element NFOs continue to parse on
+the first attempt with no change in behaviour.
+
+**Files changed:** `utils/duration_cache.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.7c
+
+### Fix — missing_durations.txt not written; episode detail missing from context menu
+
+Two bugs in `record_missing_duration()` in `channel_manager.py`:
+
+1. `xbmcvfs.File` does not support append mode (`"a"`). The write to
+   `missing_durations.txt` was silently failing on all platforms, so the
+   file was never created. Fixed by reading existing content first, then
+   writing the full file back with the new line appended.
+
+2. The `_topup_queue` call site passed empty `title`, `season=0`,
+   `episode=0` to `record_missing_duration` because those fields were
+   not captured before `_normalize_ep` overwrote the `ep` variable.
+   The context menu therefore showed only the show name repeated for
+   every skipped entry. Fixed by snapshotting `ep_title`, `ep_season`,
+   `ep_ep`, `ep_show` before calling `_normalize_ep`, matching the
+   pattern already used in `_build_fresh_queue`.
+
+**Files changed:** `channel_manager.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.7b
+
+### Fix — duration field stripped from queue file at play time
+
+`_write_now_playing()` in `player.py` rebuilds each queue item as a
+minimal dict before writing `queue_{channel_id}.json`. The TV episode
+branch did not include the `duration` field in this dict, so when
+service.py loaded the file into `self._queue` at play time, all TV
+episode items had no duration. The side panel showed durations correctly
+from the pregenerated file (read directly from disk), but once playback
+started the in-memory queue and the rewritten queue file lost the field.
+
+Fix: `duration` is now unconditionally included in the TV/folder entry
+dict (defaulting to 0 for pre-1.1.7a items with no field, matching the
+backwards-compat contract). `duration_is_default` is also preserved for
+folder items that are still using the estimated duration so that
+`capture_folder_duration()` in service.py fires correctly after first
+playback.
+
+**Files changed:** `player.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
+## Version 1.1.7a
+
+### Duration Cache — NFO-based episode and movie durations
+
+Every queue item now carries a `duration` field (integer seconds).
+Duration is read from the companion NFO file at the moment each item
+is placed in the queue. Items with no readable duration are skipped.
+
+**TV episodes and movies:**
+- Duration read from `fileinfo/streamdetails/video/durationinseconds`
+  in the NFO file sitting alongside the video file (same base name,
+  .nfo extension). This is the same NFO written by Sonarr and Radarr.
+- Movies use the `runtime` field from the local library cache (already
+  available via JSON-RPC at library build time).
+- Items with missing NFO, missing duration element, or parse errors
+  are skipped from the queue. The skip is recorded per-channel in
+  state.json and appended to `missing_durations.txt` in the addon
+  profile folder.
+
+**Folder channel items:**
+- Duration read from companion NFO if it exists (written by this addon
+  after first playback).
+- If no companion NFO: item uses the user-configured default duration
+  (Settings → Default Folder Item Duration, default 20 minutes).
+  Folder items are never skipped — default fills the gap.
+- After first playback, service.py captures getTotalTime(), passes it
+  to channel_manager.capture_folder_duration() which writes a companion
+  NFO alongside the video file and updates the queue item in place.
+  Over time, all folder items accumulate real durations organically.
+
+**Missing Durations context menu:**
+- A "Missing Durations (N)" entry appears on any channel that has
+  skipped items. Hidden when count == 0.
+- Opens a scrollable dialog listing each skipped item with show,
+  episode label, and file path.
+- "Clear Missing Durations List" option (with confirmation) clears the
+  per-channel list. Does not clear missing_durations.txt.
+
+**Side panel duration display:**
+- Each upcoming item in the right pane now shows duration in label2:
+  - TV: "S03E04 — The Dog · 23 min"
+  - Movie: "1990 · 1 hr 58 min"
+  - Folder: "42 sec" (or "20 min" if using default)
+- Pre-1.1.7a queue items have no duration field; they show no duration
+  hint and are not skipped retroactively. Queues self-heal as content
+  rotates through and gets rebuilt with durations.
+
+**New setting:** Default Folder Item Duration (minutes) — default 20.
+
+**New strings:** #32667–#32671
+
+**New file:** `resources/lib/utils/duration_cache.py`
+
+**Files changed:** `utils/duration_cache.py` (new), `channels/base.py`,
+`channels/serial.py`, `channels/folder.py`, `channel_manager.py`,
+`service.py`, `ui/channels.py`, `ui/side_panel.py`, `router.py`,
+`addon.py`, `settings.xml`, `strings.po`, `addon.xml`, `CHANGELOG.md`,
+`README.md`, `SPEC_1_1_7a_Duration_Cache.md`
+
+**Backwards compatible:** existing queue items load without error.
+All duration reads use `item.get("duration", 0)`.
+
+---
+
+## Version 1.1.6r
+
+### Fix — stale resume/carousel comments corrected
+- carousel.py docstring incorrectly stated "no catching up, no resume"
+  and "service.py _do_resume_check skips resume when carousel_enabled=True".
+  Neither was true — resume works normally on carousel channels while
+  watching. When the carousel timer fires and pops an item, the saved
+  resume position for that item is cleared at pop time via
+  clear_resume_position(). The docstring now accurately describes this.
+- No code logic changed — documentation only.
+- Files changed: `carousel.py`, `addon.xml`, `CHANGELOG.md`
+
+---
+
 ## Version 1.1.6q
 
 ### Fix — play button showing empty box glyph
@@ -5649,3 +8033,120 @@ All must pass before Phase 6 is started.
 - Persistent queue and state files
 - Continuous playback with automatic queue top-ups
 - Kodi 21 Omega (Python 3)
+## Version 1.2.0n
+
+### Repo submission preparation
+
+- **addon.xml:** Fixed `<news_url>` tag to `<news>` per Kodi repository
+  spec. All other required fields already present and correct.
+- **LICENSE:** Added GPL-2.0 license file to addon root (matches
+  `<license>GPL-2.0-only</license>` declared in addon.xml).
+- **README.md:** Updated from 1.1.9s to 1.2.0n. Added Audio Channel,
+  Party Mode, Songs Cache, Channel Scheduling, Move Up/Down, and Rebuild
+  Songs Cache to all relevant sections. Updated data files table, settings
+  table, file layout, and known limitations.
+- **Code audit:** No bare `open()` calls, no wildcard imports, no Python 2
+  patterns. All strings through strings.po. Fully Python 3 compliant.
+- **fanart.jpg:** 1280x720 confirmed. **icon.png:** 256x256 confirmed.
+
+**Files changed:** `addon.xml`, `LICENSE` (new), `README.md`
+
+
+## Version 1.2.0o
+
+### Feature — Ticker: schedule-aware upcoming programming promos
+
+The Lower Third Ticker now includes a third entry type alongside
+next-item and show-promo entries: **schedule promos**.
+
+For each active schedule firing within the next 24 hours whose target
+channel is visible, a ticker entry is generated showing:
+- **Phrase line:** time context + channel name — e.g.
+  "Tonight at 8:00 PM — Comedy TV" or "Saturday at 9:00 PM — Drama"
+- **Title:** schedule name + item count + source channel —
+  e.g. "Tuesday Night Drama (4 eps from Til Death)"
+
+Time context adapts automatically: "Tonight at" for schedules firing
+later today, "Tomorrow at" for tomorrow, or "Day at" for named-day
+schedules further out. Schedules that have already fired today are
+excluded. Inactive schedules are excluded.
+
+**New strings:** #32789–#32792
+**File changed:** `resources/lib/ui/side_panel.py`
+
+### Feature — Channel Info: Schedules section
+
+Channel Info now shows a Schedules section at the bottom for any
+channel that participates in the scheduling system — either as a
+target (receives blocks) or as a source (feeds blocks).
+
+Each entry shows: schedule name, item count, counterpart channel name,
+day and time (12-hour format). Inactive schedules are shown with an
+[inactive] label rather than hidden — so the user can see the full
+picture even for paused schedules.
+
+Example output:
+```
+Schedules
+  Receives: Tuesday Night Drama  (4 items from Til Death at Tuesday 9:00 PM)
+  Feeds: Weekend Movies  (2 items to Movie Night at Saturday 8:00 PM)
+```
+
+The section is omitted entirely when no schedules involve this channel.
+
+**New strings:** #32793–#32796
+**File changed:** `resources/lib/ui/channels.py`
+
+
+## Version 1.2.0p
+
+### Fix — Songs cache rebuild failing with unexpected keyword argument
+
+`_rebuild_songs_cache()` in `service.py` was still passing
+`progress_callback=_on_progress` to `build_songs_cache()`, which had
+that parameter removed in 1.2.0m when the blocking progress dialog was
+replaced with toast notifications. This caused both the automatic startup
+rebuild and the manual "Rebuild Songs Cache" button to fail silently with
+`unexpected keyword argument 'progress_callback'`, leaving the songs cache
+permanently at 999 days old.
+
+**File changed:** `service.py`
+
+
+## Version 1.2.0q
+
+### Fix — Songs cache build taking 3+ minutes due to UDF ORDER BY
+
+Each paginated `GetSongs` RPC call included `"sort": {"order": "ascending",
+"method": "title"}` which triggered Kodi's `udfNaturalSortFormat()` MySQL
+user-defined function. Because this UDF is not indexed, MySQL performs a
+full table sort on every single page request — meaning a 15,500-song library
+re-sorted all 15,500 rows 31 times, costing ~7 seconds per page regardless
+of batch size. Total build time: 3.5+ minutes.
+
+Fix: removed the `"sort"` parameter from both `build_songs_cache()` and the
+fallback live RPC in `get_all_songs()`. MySQL now does a simple sequential
+scan. Each page takes under 1 second; total build time should drop to under
+30 seconds.
+
+Order in the cache is not important — audio channel builders sort and filter
+in Python after loading from cache.
+
+**File changed:** `resources/lib/library.py`
+
+### Fix — Songs cache build: duplicate threads when manually triggered
+
+Two threads were running simultaneously because the startup check launched
+one thread automatically, and the user (not knowing it was running) clicked
+"Rebuild Songs Cache" to launch a second. Both threads competed for the same
+MySQL connections, causing page queries to take up to 21 seconds instead of 7.
+
+Fix: startup now shows a toast notification so the user knows the cache is
+building. Two variants: "Building songs cache in background..." (first time,
+cache missing) and "Refreshing songs cache in background..." (stale cache).
+A "Rebuild complete" toast fires when finished.
+
+**Files changed:** `service.py`,
+`resources/language/resource.language.en_gb/strings.po`
+(new strings #32797, #32798)
+
