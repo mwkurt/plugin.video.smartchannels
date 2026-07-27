@@ -381,3 +381,4 @@ GPL-2.0-only. See LICENSE file.
 
 Current release: **1.2.1u**
 Compatible with: Kodi 21 (Omega), Kodi 22 (Piers)
+
