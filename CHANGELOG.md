@@ -1,6 +1,421 @@
+## 3.1.101
+router.py, ui/channels.py, strings.po. Builds on 3.1.100.
+- Fix: settings "View Missing Durations Log" with an empty log showed a box whose message was the button's own name. It now says "No missing durations have been recorded." (new string 32715).
+- Fix: the per-channel Missing Durations viewer (channel context menu, used when "Use side panel" is off) read the wrong field names (`ep_label`, `file_path`), so entries showed blank episode labels and no file path. It now reads `episode`, `title` and `file`, matching what is stored and what the side panel shows.
+- Test: SmartChannels_Test_3.1.101_Missing_Duration_Viewers.md.
+
+## 3.1.100
+channel_manager.py only. Builds on 3.1.99.
+- Fix: when the next episode of a show could not be given a duration, the one-episode replacement (used after every episode ends, after a skip, and by the carousel) gave up on the whole show. In normal play the queue then lost a slot for good (that show never came back); on a carousel the pop was aborted ("replacement returned nothing"). The episode was also not written to the missing-durations list.
+- Now: the unreadable episode is recorded in the missing-durations list (state + missing_durations.txt) and skipped, and the show's next episode is taken, exactly as the queue build already did. The queue keeps its size. Only a show with no playable episode at all (or an exhausted show with recycle off) returns nothing, as before.
+- Also: the interleaved-TV replacement now records the episodes it skips.
+- Code: `_pick_one_ep_no_slot_advance` is now a short loop over the new `_next_candidate_ep` (the old selection code, unchanged, minus the duration check). All five callers (carousel, TV 1-for-1, serial, next-show) get the fix.
+- Seen in the logs: one "Duration skip ... reason=no_nfo" for an episode whose .nfo does exist (durationinseconds 2574). A momentary network-share failure made `xbmcvfs.exists` return False. With this build such a glitch skips that one episode for the cycle and logs it, instead of shrinking the queue or stalling the carousel. Not changed: no retry on the NFO check (it would slow every bulk build over a share).
+- Not changed: a carousel whose show has NO playable episode still aborts the pop and retries each minute.
+- Test: sim_200 (real picker, stubbed duration reader): good episode; bad episode skipped and recorded once; cursor past it; all-bad returns None, each recorded once; wrap with recycle; recycle off; random shows. Sims 186-199 pass. pyflakes clean.
+
+## 3.1.99
+Filter rework (library.py, ui/dialogs.py, ui/channels.py, channel_manager.py one-line rename, strings.po). Builds on 3.1.98.
+- New: genre, studio and MPAA filters ask a match type first: is / is not / contains / does not contain. Previously these were effectively "contains" only, so several genre rules just added up.
+- New: year and rating filters offer = , != , > , >= , < , <= .
+- Change: rule joining. Previously ONE "or" anywhere ORed every rule. Now AND binds tighter than OR: rules joined by AND form a group, groups are joined by OR. Filters with only AND, or only OR, behave as before. Mixed filters with three or more rules change meaning.
+- Fix: rating "equals" no longer matches 7.1 for 7.0 (float compare, now rounded to 1 decimal); rating "greater than" is now strict.
+- Kodi JSON-RPC has no >= or <=; these are emulated for whole numbers (year, season) and approximated for ratings. The Python fallback is exact.
+- Code: `_filter_items_in_python` is now the public `LibraryClient.filter_items`, removing a private cross-module call in channel_manager.py.
+- UI: filter summary lines show the full rule (e.g. "Genre is not Comedy", "Year >= 2000").
+- Strings: new 32488, 32496, 32497, 32519, 32520; reworded 32499-32501. 32508-32510 and 32514-32516 are now unused (left in place).
+- Not changed: artist, album, album artist and play count filters. Saved rules keep working (old comparison values map to the new defaults). TV has no MPAA filter.
+- Test: sim_199 (engine, JSON-RPC, summaries, rule builder) and sims 186-198 pass; pyflakes clean.
+
+## 3.1.98
+service.py only (`SmartChannelsMonitor.__init__`). Builds on 3.1.97.
+- Fix: changing the Shared storage path never showed the "copy your data to the new location?" prompt the first time in a Kodi session. The monitor's "last shared path" started as None, so the first settings change after Kodi started recorded the NEW path as the baseline and returned; only a second change compared old with new. The baseline is now the shared path in force when the service starts, so the first change prompts as designed (local -> shared, shared -> local, shared -> a different share). Changing the setting to the same share in another form (UNC vs smb://) still does not prompt.
+- Effect for a client joining a share that already holds channels: the prompt now appears. Answer No: Yes copies the client's local files over the share's `channels.json`, `state.json` and queues.
+- Not changed: the migration, the "delete the old files?" question and the dialog texts.
+- Test (sim, real SmartChannelsMonitor.onSettingsChanged with stubs): baseline taken at start; first change prompts with the local->shared text; same value again, and the same share in UNC form, do not prompt; back to local prompts with the shared->local text; start with a path already set and unchanged: no prompt. On 3.1.97 the first two fail. Sims 3.1.86-3.1.96 pass. pyflakes clean.
+
+## 3.1.97
+Settings only (resources/settings.xml). No Python code, strings or behaviour changes. Builds on 3.1.96.
+- Change: the Shared storage path, Backup folder path and Channel icon folder settings are now Kodi folder pickers (`type="path"`, button control) instead of text boxes. Clicking one opens Kodi's folder browser (sources, drives, "Add network location..."). Shared and Backup are marked writable, so only folders Kodi can write to are offered; the icon folder is read-only. Empty is still allowed. The labels are unchanged (#32030, #32057, #32005).
+- Existing values carry over unchanged (the setting is still stored as text), and the 3.1.95/3.1.96 path handling still normalises whatever Kodi returns (smb://, drive letters, UNC from an older entry, quotes).
+- Not changed: ffprobe path stays a text box. Changing the shared path still raises the "copy your data?" prompt; answer No when joining a share that already holds channels.
+- Test: settings.xml parses; all three settings checked for type path / button / format path / writable / allowempty; sims 3.1.86-3.1.96 pass. The picker itself must be checked in Kodi (see the 3.1.97 test).
+
+## 3.1.96
+Folder settings (utils/paths.py, channel_manager.py, library.py, utils/ffprobe_scanner.py). Queue repair, backup/restore, playback and service.py are unchanged. Builds on 3.1.95.
+- Fix: the Channel icon folder was used as typed, so a Windows network path (`\\Server\k\Icons`) found no icons (the side panel showed the default icon and nothing was logged). It now goes through `normalize_share_path` like the shared and backup folders, files are joined with `path_join`, and a folder that cannot be listed is logged. Setting it to `smb://Server/k/Icons` already worked.
+- Fix: the ffprobe path setting accepts a quoted path ("Copy as path"), the folder that holds ffprobe.exe, a path without ".exe", and an smb:// or UNC path. It was "not found" for all of these.
+- Fix: the ffprobe folder scan counted every file on a network share as failed, because the scanner would not use an smb:// path. smb:// paths are now converted to `\\server\share\...` for ffprobe (Windows uses its own login for the share; a user name or password in the Kodi path is dropped). NFS paths are still counted as failed. The NFO is still written through Kodi against the original path.
+- Code: new public `clean_path_setting()` (removes spaces and quotes around a pasted path) and `smb_to_unc()` in utils/paths.py. `normalize_share_path()` now also strips quotes and keeps a drive root as `C:\` (it used to become `C:`, which means "the current folder").
+- Code: `LibraryClient` had its own copy of the UNC-to-smb:// conversion for the shared folder; it now calls `normalize_share_path`. Same result, one implementation.
+- Audit result: the four path settings are Channel icon folder, Shared storage path, Backup folder path and ffprobe path; all now use the common helpers. Folder channels, schedules and per-channel icons store paths returned by Kodi's own browse dialog and need no conversion.
+- Not changed: the Restore text-encoding issue noted in 3.1.95; `xbmcvfs.exists` on an smb:// folder without a trailing slash in `LibraryClient.__init__` (harmless, it only retries mkdirs).
+- No new strings.
+- Test (sim, stubbed Kodi modules, real normalize_share_path / smb_to_unc / resolve_channel_icon / find_ffprobe / scan_folder): quotes, UNC, trailing slashes, drive roots; smb to UNC with spaces, credentials and no share path; icon found by exact name and case-insensitively from a UNC or smb:// folder, default when absent, manual icon first; ffprobe given as file, quoted, folder, no extension, missing; a scan of an smb:// folder runs ffprobe on the UNC path and writes the NFO against the smb:// path; nfs:// still failed. Sims 3.1.86-3.1.95 pass. pyflakes clean.
+
+## 3.1.95
+Backup / Restore (router.py, utils/paths.py). Queue repair, playback, service.py and the wizards are unchanged. Builds on 3.1.94.
+- Fix: Backup failed with "Could not copy backup to: ..." when the Backup folder path was a Windows UNC path (`\\Server\k\Kodi 21.3`). The path was used exactly as typed; only the shared-storage path was converted to `smb://`. Backup and Restore now run the setting through the same conversion, so `\\Server\share\folder`, `//Server/share/folder` and `smb://Server/share/folder` all work. A UNC path is not usable on Android; the converted form is.
+- Code: the conversion that lived inside `shared_root()` is now the public `normalize_share_path()` in utils/paths.py, and `shared_root()` calls it (behaviour unchanged). No duplicate code.
+- Fix: Backup now creates the backup folder when it does not exist (it used to fail the copy).
+- Logging: Backup logs files it could not read, a failed folder create, a failed copy (with source and target) and exceptions; Restore logs a failed folder listing and a failed copy. Nothing was logged before. Dialog texts are unchanged.
+- No new strings.
+- Not changed: Restore writes files with `zf.read(fn).decode("latin-1")` through a text-mode file; this looks like it double-encodes non-ASCII characters (accented titles) on restore. Left alone for a separate fix (see the notes to the developer).
+- Test (sim, stubbed Kodi modules, real backup_data / restore_data / normalize_share_path): UNC, `//`, `smb://`, trailing slashes, drive letter, local path, empty and None; shared_root unchanged for UNC; backup copies to the converted `smb://` path, creates a missing folder, does not recreate an existing one, still reports #32368 when the copy fails; restore lists and copies from the converted path. Sims 3.1.86-3.1.94 pass. pyflakes clean.
+
+## 3.1.94
+Library cache and queue repair (library.py, channel_manager.py, router.py, addon.py, settings.xml, strings.po). Playback, replacements, service.py and the wizards are unchanged. Builds on 3.1.93.
+- Fix: after episode files were renamed or moved, a channel could stall on the old path (8 Simple Rules S02E12). The episode lists the addon loads from the Kodi library were kept in memory until Kodi restarted, so the service kept queueing and replacing episodes with the old file names even after Kodi had been cleaned and rescanned.
+- New: Settings > Cache > "Repair Queue Paths" (#32026, confirmation #32027, result #32028). It first clears the in-memory library lists, then goes through every channel's queue and looks each TV episode up in the library (by episode ID, then by show + season + episode). The file path, title, season/episode, episode ID and multi-episode span are rewritten from the library. Queue order, cursors, carousel state and all other fields are not touched, and a resume position saved under the old path moves to the new path. Only queue files that changed are written.
+- An episode the library no longer has is left as it is and counted as "not found" (logged with a warning). Movies, folder and audio entries are not checked.
+- `LibraryClient.invalidate_cache()` (public): clears the lists and bumps a Kodi home-window property that every LibraryClient checks before a lookup, so the service (a separate process from the settings action) reloads too. The property exists per Kodi instance, so clearing is per client; the repaired queue files are shared by all clients.
+- `ChannelManager.repair_queue_paths()` (public).
+- Not changed: the Kodi playlist of a channel that is playing keeps its old paths until that channel is started again. The library must be updated in Kodi first. No automatic detection or skipping of files that fail to open yet (planned).
+- Test (sim, real repair_queue_paths / _repair_queue_item / LibraryClient with stubs): renamed file, episode ID changed by a rescan, episode missing, movie entry, already-current entry, resume re-keyed, order and untouched entries identical, only changed queue written, second run changes nothing, a second LibraryClient sees the cache clear. Sims 3.1.86-3.1.93 pass. pyflakes clean, settings.xml and addon.xml parse.
+
+## 3.1.93
+Manage Interleave wizard (ui/wizards/interleave.py) and strings.po only. Builds on 3.1.92.
+- Fix: Kodi's number pad shows a single heading line, so the extra Combo Block line added in 3.1.92 (and the "(Interleave Sources: N)" tail) never appeared. A Combo Block source now uses its own one-line heading, #32870 "How many complete blocks to insert each time?"; all other sources keep #32343 "How many items to insert at each slot?". The number entered still counts whole blocks.
+- Superseded: the 3.1.92 wording of #32870 below.
+
+## 3.1.92
+Housekeeping (service.py, channels/interleave.py, scheduler.py, ui/wizards/interleave.py, strings.po, addon.xml, addon root). No queue-building or replacement behaviour changes.
+- Fix: `onSettingsChanged` restarted the resume poll with a call that has the wrong arguments (`_start_poll(new_interval, ...)`; `_start_poll` takes a file path). It now restarts the timer with `_schedule_poll()`. (The line only runs when the poll-interval setting changes while the timer is running, so it was not reachable in normal use.)
+- Fix: the Manage Interleave prompt "How many items to insert at each slot?" showed the text of #32870 for every source, with a literal "{0}" in it, and the text told users to enter the Combo Block's slot count, which would have inserted that many whole blocks (the number entered counts blocks, not slots). It now appears only for a Combo Block source and #32870 is reworded without a placeholder: "A Combo Block counts as 1 item here, however many slots it has. Leave at 1 to insert one complete block each time."
+- Code: `_combo_unit_size` is now public `combo_unit_size` (channels/interleave.py); scheduler.py was importing the private name from another module.
+- Removed from the addon root: SMARTCHANNELS_HANDOFF_7.md, SmartChannels_Test_Matrix_3_0_75.md.
+- addon.xml: real description, a news entry. Source / website / forum URLs are not set yet (need the repository address).
+- Not changed: the `xbmc.python` requirement stays 3.0.0 (not verified against the Kodi 21 documentation); the remaining open items stay on the list.
+- Test (sim): wizard run with a stub manager/dialog: Combo source -> prompt carries the new text, no "{0}"; TV / movie sources -> no hint line. Earlier sims (3.1.86-3.1.91) still pass. pyflakes clean, addon.xml parses.
+
+## 3.1.91
+Manage Interleave wizard (ui/wizards/interleave.py). Queue building, replacements, service.py and the other wizards are unchanged.
+- Change: a Serial TV channel can no longer be chosen as an interleave source. Serial channels are stored as type "tv" with playback_mode "serial", so the source picker (which only excluded Audio, Party and Combo types) offered them, and the interleave code has no support for them (cycle planning, replacements and progress all assume in-order or random shows). The picker now skips them; if nothing else is eligible the existing "no sources available" message appears.
+- Workaround for the same effect: a hidden Round Robin TV channel with the show(s) as the source.
+- Not changed: a Serial channel already saved as a source stays in the list until removed; the Serial branches in the replacement code are left in place; whether a Serial channel may be an interleave host (the "serial" checks in side_panel.py and router.py never match) is undecided.
+- Test (sim, real wizard run with a stub manager/dialog): hidden Serial channel only -> "no sources available" and no picker; hidden Serial + hidden Round Robin -> only Round Robin offered; visible Round Robin and carousel channels still excluded. pyflakes clean.
+
+## 3.1.90
+TV queue builder (channel_manager.py `_build_tv_items`, `_fill_slot`). Audio, Party, Combo, service.py and the wizards are unchanged.
+- Fix: a show with few episodes dropped out of the rotation. T TV with According to Jim limited to S01E01-S01E04 (recycle on), interleaved into T Movies: after Jim's four episodes were queued he was skipped, while the other shows kept going. Queue showed Jim 4 times, the others 5-6, and rotation slots with no Jim; the one-for-one replacements keep each show's count, so it never evened out. A build asking for 20 episodes returned 22.
+- Cause: the build refused to queue the same file twice anywhere in one queue, so when a show recycled (last episode -> first) its first episode was refused. This applied to every TV build (a TV channel's own queue as well as interleaved sources).
+- The duplicate-file check now looks only at the show's current pass. When a show wraps back to its first episode a new pass starts, so it is queued again. Multi-episode files are still never queued twice within a pass.
+- Replacements were already correct (they wrap), unchanged.
+- Existing queues are not changed: Reset (or Manage Interleave on) the channel to rebuild.
+- Not changed (planned next, 3.1.91): randomised shows and Serial TV sources in interleave.
+- Test (sim, real _build_tv_items / _fill_slot, stub library): 4-episode show + three 100-episode shows, 20 requested -> exactly 20, 5 each, strict order, Jim E1-E4,E1. TV channel size 30: Jim in every round (8 of 32). Multi-episode file not duplicated within a pass. Start at E3 -> E3,E4,E1. Two tiny shows alternate strictly. Serial unchanged. On 3.1.89 the first six fail (22 items, Jim 4) and the two-tiny-shows case does not finish. 3.1.86-3.1.89 sims still pass. pyflakes clean.
+
+## 3.1.89
+Interleave progress (channel_manager.py `reset_channel`, `regenerate_queue`, `_load_foreign_items`; new public `capture_interleave_progress`, `begin_interleave_resume`, `end_interleave_resume`). Audio, Party, Combo, service.py and the wizards are unchanged.
+- Fix: Reset Channel and Manage Interleave on a host sent every interleaved TV show back to the source's starting episode, losing the episodes already played. They now start each interleaved sequential show at the episode that was next in line in the host's queue. Works for TV, Movie and Folder hosts.
+- A show's first interleave still starts at the source's starting episodes (3.1.87/3.1.88). Progress is kept only while the source stays interleaved; a removed and re-added source starts at its starting episodes. A new second source starts at its own starting episodes.
+- Not changed (planned 3.1.90): randomised shows and Serial TV sources are skipped by this and may still restart.
+- Existing queues are not changed; the next Reset or Manage Interleave uses the queue as it is then.
+- Test (sim, real _load_foreign_items / capture_interleave_progress / reset_channel / regenerate_queue with stubs): first queued episode per show captured; rebuild starts shows there; after end, back to starting episodes; second source and shows without progress keep their starting episodes; an episode no longer in the library falls back to the starting episode; random, serial, movie and missing sources skipped; progress cleared even if the build raises. 3.1.87 sims still pass. pyflakes clean.
+
+## 3.1.88
+Edit Channel (channel_manager.py `update_channel`). Audio, Party, Combo, service.py and the wizards are unchanged.
+- Fix: starting episodes were forgotten for shows you did not touch in a later edit. T TV was set to start at chosen episodes for four shows; the first Reset of the movie channel with T TV interleaved kept them. After a second edit that changed only According to Jim, the saved starting episodes held Jim alone, so the next Resets started the other three shows at S01E01. Cause: Edit saved only the shows picked in that edit, replacing the earlier list.
+- Edit now merges: shows picked in this edit override their old entry, the other shows keep the starting episode saved earlier, and entries for shows removed from the channel are dropped.
+- Unchanged: the live queue and state after an edit (already correct), Serial/Movie/Folder channels.
+- Existing channels: a starting episode already lost stays lost; set it again once in Edit.
+- Test (sim, real update_channel with stub): edit one of four shows -> other three keep their starting episode, picked show overrides, empty or missing picks keep all, removed show dropped, new show added, rebuild sees the merged list, Movie channel unaffected, int keys normalised. The same test fails on 3.1.87 (other shows lost). pyflakes clean.
+
+## 3.1.87
+Interleaved TV episodes (channel_manager.py `_load_foreign_items`, new `get_interleaved_tv_replacement`, `get_one_replacement`). Audio, Party, Combo, service.py and the wizards are unchanged.
+- Fix: replacements for interleaved TV episodes jumped to the wrong episode. T Movies with T TV interleaved: the woven queue held According to Jim S01E01-S01E03, then the replacement for the played Jim episode was S08E08. Cause: the first weave always started every show at S01E01 and ignored the source's starting episodes, while a replacement read the source channel's OWN saved position (T TV had starting episodes set, so its position was at Jim S08E05 and on). The queue used one position when it was built and another when it refilled. Replacements also moved the source channel's own saved position.
+- The weave now applies the source's starting episodes (Jim starts at S08E05 when T TV is set to start there), the same way a channel does when it builds its own queue.
+- A replacement for an interleaved episode of a sequential show is now the episode after the last queued episode of that show from the same source (the host queue is the authority); when none is queued it is the episode after the one just played. Multi-episode files skip their whole span; at the end of a show it wraps to the first episode when the source recycles, otherwise there is no replacement. The source channel's own saved position is neither read nor changed.
+- Unchanged: randomised shows and Serial TV sources keep the previous behaviour (they use the source's own list of played episodes), as does the rare case where the played episode is no longer in the library.
+- Not changed (planned next): keeping the interleaved episodes' progress through a Reset or Manage Interleave (a rebuild still starts the shows at the source's starting episodes, not where they had got to).
+- Existing queues are not changed: Reset (or Manage Interleave on) the host channel to rebuild them.
+- Test (sim, real `_load_foreign_items` / `get_one_replacement` / `get_interleaved_tv_replacement` with a stub library): source with starting episode at index 167 and its own saved position at 171/38/99: weave starts the show at 167; woven episodes plus 400 one-for-one replacements run consecutively for every show (167, 168, 169 ... / 0, 1, 2 ...) and the source's saved position is unchanged. The same test on 3.1.86 fails as reported (0, 1, 2, then 171, 172, 173; 38, 39, 40; 99, 100, 101). Recycle on wraps; recycle off ends; a multi-episode file skips its span; a missing-duration episode is skipped; randomised, serial and missing-episode cases use the previous path. pyflakes clean.
+
+## 3.1.86
+Interleave cycle planning (channels/interleave.py `plan_primary_count`, new `source_rotation_size`; channel_manager.py new `build_planned_queue`, `extend_primary_to_cycle`, `build_channel_queue` and `regenerate_queue` for Movie and Folder channels). Audio, Party, Combo, service.py and the wizards are unchanged.
+- Fix: a round-robin TV source (several shows) could be woven in with a half-finished round. T Movies (10 movies, T TV with 4 shows every 2, jitter 1) came out as Jim, 3rd Rock, 2 Broke Girls, 8 Simple Rules, Jim, 3rd Rock and ended on a movie. A replacement always comes from the same show as the item it replaces, so the unbalanced shape never evened out: Jim and 3rd Rock would play twice as often as the other two for as long as the channel ran.
+- The planner now also requires every round-robin TV source to have given a whole number of rounds of its shows (4 shows -> 4, 8, 12 episodes), on top of "the queue ends right after an interleaved group". The queue may be longer than the queue size, never shorter. Folder, movie, combo-block and serial-TV sources count as one show, so their results are unchanged (T Host with a 2-item combo block, size 10, is still exactly 10 items).
+- Movie and Folder channels: a fresh build now plans the number of its own items (queue size is the minimum) so the queue ends on a whole cycle; one seed drives both the plan and the weave. Manage Interleave on a Movie or Folder channel keeps the items already in the queue and adds more of the channel's own items where the cycle needs them (new public `extend_primary_to_cycle`), then weaves with the same seed.
+- TV channels use the same planner, so a TV host with a multi-show TV source is fixed too. The build can take a few more passes over the episode lists in that case (sim worst case 17).
+- Not changed (planned next): interleaved TV episodes still start at S01E01 on every build; the source's starting episodes and progress are not used yet.
+- Test (sim, real planner / weaver / build_planned_queue / extend_primary_to_cycle / _build_planned_tv_items with stub library): Movie and Folder host x 2-5 show TV source x 6 frequency/jitter/count settings x 60 builds each: every queue has >= 10 own items, ends on an episode, whole rounds, every show equal; T Movies case (4 shows, every 2 +/-1) -> 4/8/12.. episodes ending on an episode; TV-host planner 400 seeds all whole rounds on a cycle end (3.1.85 planner: 131 of 300 not); T Host combo sizes 9/10/11 -> 10/10/15; two TV sources; Manage Interleave extension keeps the original 10 movies; 150 random TV-host setups (1-4 host shows, 2-5 source shows) whole host rotation + whole source rounds. pyflakes clean.
+
+## 3.1.85
+Movie and Folder channels with interleave (channel_manager.py `build_channel_queue`; new `weave_interleave_sources`). TV, Audio, Party, Combo, service.py and the wizards are unchanged in behaviour.
+- Fix: resetting a Movie or Folder channel (or any edit that rebuilds its queue) dropped every interleaved item. Only TV channels wove their interleave sources into a fresh queue; Movie and Folder channels got interleave only through Manage Interleave, and lost it again on the next reset. T Movies (Comedy movies, T TV episodes every 2, jitter 1): after Reset only movies remained.
+- A fresh Movie or Folder queue now has its interleave sources woven in, for every source type (TV episodes, folder items, movies, combo blocks). Queue size still counts only the channel's own items, so queue size 10 gives 10 movies plus the interleaved items on top, as Manage Interleave already did. Jitter gaps are rolled again on each build.
+- The weave and combo-state sync now live in one function, `weave_interleave_sources`, used by the TV build and by the new Movie/Folder path (no duplicate code). The TV build behaves as before and still passes its jitter seed.
+- The combo-pointer reset before a create/edit rebuild (`_pregenerate_queue_safe`) now also covers Movie and Folder channels, as it does for TV.
+- Not changed (planned next): interleaved TV episodes still restart from S01E01 on every build (the source's starting episodes and progress are not used yet).
+- Test (sim, real build_channel_queue / weave_interleave_sources / weaver with stub builders): Movie and Folder host, no interleave -> 10 plain items; Every 3 -> 10 own items + 3 interleaved (gaps 3,3,3); jitter 2+/-1, 500 builds each -> 10 own items, every gap 1-3; missing source -> plain queue; empty queue unchanged; TV seed passed to the weaver.
+
+## 3.1.84
+TV channels with interleave added through Manage Interleave (channel_manager.py `regenerate_queue`; new `_build_planned_tv_items`, `_rewind_tv_cursor`, `_regenerate_tv_interleave`). Includes 3.1.83 (jitter). Audio, Movie, Folder, Party, Combo, service.py and the wizards are unchanged.
+- Fix: adding or changing a combo block / interleave on an existing TV channel kept the old episodes and only wove blocks into them, so queue_size and the cycle end were ignored. Test Channel (3 shows, queue size 10, a 5-item combo block every 3 episodes) got 12 episodes + 4 blocks = 32 items instead of 2 cycles = 16 items (the 12 episodes came from the old queue, which was built before the block existed).
+- Manage Interleave now rebuilds the primary episodes from the head of the current queue through the same planner as a new queue (queue_size counts every item, a minimum, always ends on a whole interleave cycle, jitter included). The cursor is moved back to the first queued episode of each show (randomised shows: the queued episodes are removed from the played list), so the channel continues from where it was: the queue head is unchanged and later replacements carry on after the last queued episode.
+- The planning logic now lives in one function, `_build_planned_tv_items`, used by both the initial build and Manage Interleave (no duplicate code).
+- If the cursor cannot be rewound reliably (episode no longer in the library) the previous behaviour (re-weave the existing episodes) is used and a log line says so. Removing the last interleave source still just drops the blocks and keeps the episodes. Non-TV channels and Serial channels are unchanged.
+- Test (sim, real regenerate_queue / _build_fresh_tv_queue with stub library): your setup (3 shows, size 10, block of 5 every 3) built without interleave (12 episodes) then interleave added -> 16 items [3,B x5,3,B x5], episodes 1-2 of each show, cursor ep_pos 2/2/2; partially played queue (head = show 3) -> 16 items starting with show 3; 90 jitter / multi-source / 1-3 show regenerations all >= queue_size and ending on a block; randomised shows -> 16. All earlier sims (initial build, jitter, audio) unchanged.
+
+## 3.1.83
+Initial TV queue with interleave (channel_manager.py `_build_fresh_tv_queue`; channels/interleave.py `plan_primary_count()`, `_source_rng()`, optional `seed`/`rng` on the weaver). Replaces 3.1.82 (not yet tested in Kodi). Audio, Movie, Folder, Party, Combo, service.py and the wizards are unchanged.
+- Fix: sources with jitter. A jitter source draws random gaps, so 3.1.81/3.1.82 planned its cycle end on the nominal frequency only and the queue could end part-way through a group. The build now picks one random seed per queue build; the planner and the weaver draw their jitter gaps from the same seeded generators, so the planner knows the exact gaps the weave will use. Every queue (fixed frequency or jitter, one or several sources, one or several shows) ends right after an interleaved group and holds at least queue_size items.
+- The planner searches primary counts one at a time when jitter is present (a multiple of the cycle length otherwise) and the build re-plans until the show rotation and the interleave cycle end together.
+- Safety: `weave_seed` defaults to None so Serial / no-interleave paths cannot reach the weave with an undefined seed.
+- Behaviour with a non-jitter source is identical to 3.1.82. Replacements stay one-for-one; existing queues are not touched (reset the channel to rebuild).
+- Test (sim, real _build_fresh_tv_queue and weaver with stub library): 2,880 jitter builds (1-3 shows; folder and combo sources; one and two sources; count_per 1-2; queue sizes 1-60): none shorter than queue_size, none ending on a primary episode. T Host size 10 without jitter still gives [3,B,B,3,B,B]. 3.1.81/3.1.82 sims, audio sims unchanged.
+
+## 3.1.82
+Same area as 3.1.81 (initial TV queue with interleave), one tightening in `plan_primary_count()`.
+- With several interleave sources the planner now requires EVERY source to have just fired at the end of the queue (3.1.81 only checked the last one) and searches far enough to find that point instead of falling back to the first long-enough queue. Single-source channels (all channels seen so far) build exactly as in 3.1.81.
+- (Jitter sources were completed in 3.1.83.)
+- Test (sim): same cases as 3.1.81 plus two- and three-source plans; every plan ends on a block.
+
+## 3.1.81
+TV channels with interleave only (channel_manager.py `_build_fresh_tv_queue`; new `cycle_length()` and `plan_primary_count()` in channels/interleave.py). Replaces 3.1.80 (never released for testing; it counted queue_size in episodes only). Audio, Movie, Folder, Party, Combo, service.py and the wizards are unchanged.
+- Fix: the initial queue of a TV channel with interleave stopped part-way through an interleave group and counted queue_size in episodes only. T Host (queue size 10, a combo block of 2 items every 3 episodes) came out as 10 episodes + 6 combo items = 16 items ending on a group of 1 episode; replacements then grew that last group to 4 episodes before the next block.
+- queue_size now counts every item in the queue (episodes and interleaved items) and is a minimum: the build adds primary episodes until the queue holds at least queue_size items AND ends right after an interleaved group, i.e. on a whole interleave cycle. T Host size 10 -> 3 episodes, block (2), 3 episodes, block (2) = exactly 10 items. When the size does not land on a cycle end the queue is longer, never shorter: size 11 -> 15 items, 9 -> 10, 16 -> 20. The show-rotation cycle is still completed (2 shows every 3 builds a multiple of 6 episodes).
+- Counting uses each source's real items per firing (a combo block counts its unit size, times count_per). Jitter sources were completed in 3.1.83.
+- Applies when a queue is built from scratch (create, reset, edit that rebuilds). Existing queues are not touched; reset the channel to get the new shape. Replacements stay one-for-one, so the spacing stays 3 afterwards.
+- Not changed: channels without interleave (sizes identical to 3.1.79), Serial channels, regenerate_queue after an interleave change.
+- Test (sim, real _build_fresh_tv_queue and weaver with stub library): 1 show, combo of 2 every 3: size 10 -> 10 items [3,B,B,3,B,B] ending on a block (3.1.79: 16 items ending on 1 episode); sizes 9/11/15/16/5/1 -> 10/15/15/20/5/5; folder source every 3 size 10 -> 12; count_per 2 -> 14; 2 shows -> 10 items; 3 shows every 4 -> 18; two sources >= 10; no interleave 10/10/12 unchanged; episodes in order, no duplicates. Audio replays (3.1.77-3.1.79) give the same results.
+
+## 3.1.79
+Audio channels only, Album Order and Shuffle Albums (`channels/audio.py` `_album_sort_key`). No video, Party, service.py or wizard changes.
+- Fix: an album whose songs have no track number tagged (track 0) played only its first song, then the channel jumped to the next album; the other songs were never played. Found in the 3.1.78 T AlbumShuf soak: the "Bad Company" album played 1 song, every tagged album played all of its songs. Cause: the album sort key was albumartist, album, disc, track; songs with the same track number compared equal, and "next song after the tail" needs a strictly greater key, so tied songs were never chosen.
+- The file path is now the last part of the sort key, so every song has a distinct place. Albums with tagged tracks play exactly as before; untagged songs play in file-name order (the best order available without a track number). The initial queue uses the same key.
+- Also affected plain Album Order (same comparison), not only Shuffle Albums.
+- Test (sim, album of 8 songs with track 0 except one, a tagged 6-song album, an untagged 5-song album; 300 replacements, queue sizes 4 and 10, with and without Shuffle Albums): every song plays and every album run is complete. The 3.1.78 code, same data: 7 of 19 songs never played. 3.1.77/3.1.78 replays (audio order, exclude dialog) give the same results.
+
+## 3.1.78
+Audio wizard, "exclude songs" step only (ui/dialogs.py `build_audio_song_exclusions`). No channel, playback or state logic changed.
+- Fix: the count shown next to each artist ("N song(s) excluded") was the total for ALL artists, so excluding 3 songs on one album made every other artist show 3 too, and after 3 more on a second album both showed 6. The excluded list itself was correct (6 songs); only the label was wrong. Each artist now shows its own count, and the album list now shows a count per album.
+- Change: songs are picked in one multi-select per album (tick the songs to exclude, confirm once) instead of a list that closed and reopened after every tap. Songs already excluded are pre-ticked; cancelling the dialog leaves the album unchanged; unticking a song removes the exclusion.
+- Change: the song line no longer starts with "00." when the track number is not tagged (shows the title only).
+- Test (sim, 2 artists x 2 albums x 5 songs): artist screens read "Tap / Tap", then "3 excluded / Tap", then "3 excluded / 3 excluded" with 6 songs in the final list; reopening an album pre-ticks its 3 songs; unticking, cancelling and clearing all behave. The old code, run on the same data, shows the same count on both artists.
+- Unchanged: everything else, including all 3.1.77 audio order behaviour (3.1.77 replays give the same results).
+
+## 3.1.77
+Audio channels only (video, Party, service.py unchanged).
+- Audio playback order is now two choices plus a yes/no question, instead of five orders:
+  - **Shuffle (no repeats)**, then "Balance Artists?": every song plays once per cycle; with Balanced on, each artist gets equal turns (never the same artist back to back) and each artist cycles through its own songs independently (when all of an artist's songs have played, only that artist starts over).
+  - **Album Order**, then "Shuffle Albums?": albums play in order, or with shuffle in random order. Every album plays once before any album repeats (previously a random other album was chosen each time, so one could repeat early).
+- Saved channels keep working and nothing is rewritten on disk: `random` and `no_repeat` open as Shuffle, `balanced` as Shuffle + Balanced, `album` as Album, `album_shuffle` as Album + Shuffle Albums (`resolve_audio_mode`). New channel fields: `audio_balanced`, `audio_album_shuffle`.
+- Album shuffle now identifies albums by album artist + title (the initial queue grouped by title only, so two artists with an album of the same name were merged).
+- Played tracking: the `{channel}:audio_no_repeat_played` list in state.json is reused; it is now also recorded for Album + Shuffle Albums (needed to cycle albums). No new state key.
+- build_one log line now includes artist and album, and the mode flags: `build_one: 'Title' by 'Artist' [Album] for 'Channel' (order=... balanced=... album_shuffle=...)`. New INFO lines when a Balanced artist starts over and when Album shuffle starts a new cycle.
+- Strings: new #32934 (Shuffle (no repeats)), #32935/#32936 (Balance Artists question), #32937 (Shuffle Albums question). #32825 and #32854 reused for the info screen. Party channels keep their own Random / Random (no repeats) choices (#32217, #32855).
+- Replay (sim): migration of all old values; Balanced with 40/10/5-song artists, 900 replacements: 0 adjacent same-artist, artists 33% each (was skewed to the big artist before 3.1.76); every song of a small artist plays equally often (+-10%); Album Shuffle with 8 albums: albums always play through, no album starts twice before a reset, 0 violations; two artists with an album of the same name stay separate; single artist/album and pool no larger than queue work. 3.1.69-3.1.76 replays give the same results.
+- Known property (not a bug): the queue looks ahead 10 songs, so at a cycle boundary songs already queued count as used. A song can recur sooner than a full cycle at the boundary, and per-song play counts differ by about 10-15% over a long run. No Repeat without Balanced behaves as in 3.1.76.
+
+## 3.1.76
+Balanced audio order only.
+- Fix: Balanced replacements gave big-catalogue artists more turns. `build_one` picked a random song from everything except the last artist's songs; with four artists holding 60/30/10/5 songs the replacements came out 42/35/15/8%. It now picks the artist first (uniformly, excluding the artist of the last queued song) and then one of that artist's songs: 25% each in the same replay, never the same artist back to back.
+- Fix: in the initial Balanced queue (`_balanced_shuffle`, older code) each pass through the artists was shuffled independently, so the last artist of one pass could open the next (25% of the time with 4 artists). A pass no longer starts with the artist that ended the previous one when other artists are still available (0 of 26,000 boundaries in replay; was 25%).
+- Refactor: the primary-artist rule is one helper (`_primary_artist`), shared by the shuffle and `build_one`.
+- Unchanged: Random, No Repeat, Album, Album Shuffle, Party, service.py. Earlier replays (3.1.69-3.1.75) give the same results.
+
+## 3.1.75
+- Fix: on a skip in an Audio or Party channel whose pool is no larger than its queue (typically a single-album channel), the replacement was not the natural next song. Found in the 3.1.74 test with an 8-song album and queue size 8: skipping Bad Company appended "Can't Get Enough" (already queued), then "Bad Company". Cause: `_handle_skip` asks for the replacement while the skipped item is still in the queue, so `build_one` counted it as queued and every song looked taken.
+- `AudioQueueBuilder.build_one`: the consumed/skipped song is no longer counted as queued, and is not handed straight back while other songs are free. Skip and natural end now give the same result (replay of the 8 songs from the log: both loop Bad Company, Can't Get Enough, Don't Let Me Down, Movin' On, Ready For Love, Rock Steady, The Way I Choose, Seagull). With a larger pool the skipped song is still never returned straight away.
+- `PartyQueueBuilder.build_one`: same rule (first choice excludes queued files and the consumed file; the consumed file is reused only when nothing else is free).
+- Replay (60-song library, queue 8, alternating skip and natural end, 600 each): 0 duplicates in queue and 0 skipped songs handed back for Random, No Repeat, Balanced, Album, Album Shuffle; Album order stays continuous. Party (30 files, queue 6): 0 duplicates, 0 handed back. service.py unchanged.
+- Note (library data, not a bug): the songs in the test album have no track numbers (only "Seagull" has one), so Album order falls back to title order within an album. Tag track numbers for true track order.
+
+## 3.1.74
+- Fix: Audio and Party Mode channels never replaced a song after it played or was skipped, so the queue shrank until it was empty. Found in the 3.1.73 smoke test: `get_one_replacement: unhandled type 'audio'`. The gap is older than 3.1.73 (same in 3.1.42). The builders already supported top-ups, but the caller (`topup_channel_queue`) no longer exists.
+- `ChannelManager.get_one_replacement` now handles `audio` and `party` through new `_replacement_audio` / `_replacement_party` (same pattern as `_replacement_folder`). service.py is unchanged: natural end and skip already call `get_one_replacement`.
+- `AudioQueueBuilder.build_one(channel, host_queue, consumed_item)`: one song, avoiding songs already queued (a repeat only when the pool is no larger than the queue). Follows the channel order from the end of the queue: Random / No Repeat pick at random; Balanced avoids the artist of the last queued song; Album continues in album order (wraps at the end); Album Shuffle finishes the current album, then starts a random other album at track one.
+- `PartyQueueBuilder.build_one(channel, host_queue, consumed_item)`: one file, queued files excluded.
+- No Repeat (audio and party): the consumed song/file is now recorded as played (`record_no_repeat_played` was never called by anything before), and the cycle resets once every song has played.
+- Refactor, no behaviour change: `AudioQueueBuilder.build` now uses `_load_pool` (library fetch + included albums + excluded songs) and `_song_to_item`, shared with `build_one`; the album sort key is one method (`_album_sort_key`).
+- service.py: removed a redundant second `_make_listitem` import in `_handle_skip` (pyflakes clean again).
+- Replay simulation (60-song library, queue 8; party folder of 30, queue 6; 600 consumptions each): 0 duplicates in queue for every order; Balanced never plays the same artist twice in a row; Album plays in strict track order; Album Shuffle plays albums through then switches; No Repeat has 0 repeats inside each cycle (cycles of 52-53 songs, party 24-25 files). Pool no larger than queue still returns a song.
+- Comment-only: stale references to `topup_channel_queue` / `channels/tv.py` updated.
+
+## 3.1.73
+Cleanup only: dead code removed, no behaviour change intended.
+- Removed 26 functions that nothing calls (including `ComboQueueBuilder.build_one_unit`, `FolderQueueBuilder.is_exhausted`, and unused helpers in channels/base.py, library.py, channel_manager.py, scheduler.py, carousel.py, side_panel.py, logo_overlay.py, ui/*) and the whole unused module `channels/tv.py` (the TV queue builder lives in channel_manager.py since the rewrite). About 350 lines in total.
+- Removed unused imports (11 files) and unused local variables found by pyflakes; the redundant duplicate `_make_listitem` import in service.py.
+- Removed the leftover "Recycle changed" check in `update_channel` and ui/channels.py: no wizard exposes Recycle, so it could never change on edit. Mode change = randomize, no-repeat or channel type, as before.
+- Kept on purpose: legacy-data compatibility reads (old saved channel/state shapes) and the `recycle=False` branches in queue builders.
+- Checks: compileall, import smoke test, pyflakes clean, replay sims for 3.1.69-3.1.72 unchanged (0 duplicates; save_json retry results identical).
+
+## 3.1.72
+Five items from the "finish list", built together on 3.1.71 at Mark's request.
+- Fix (1): editing a TV or Serial channel's queue size (or interleave) rebuilt the queue from S01E01, the same root cause as the show-list case fixed in 3.1.69. `update_channel` now captures positions (`_capture_edit_positions`) before ANY rebuild that is not a mode change, not just a show-list change. Mode changes (randomize/recycle/type) still wipe state by design. Replay check: Serial and round-robin keep their place when queue_size 6 -> 8.
+- Change (2): the combo Folder slot no longer asks "No Repeat". It is always on for a folder slot: Random plays every file once before any repeats (3.1.70); Sequential relies on it to advance through the folder (`FolderQueueBuilder.build` filters played files) and restarts at the end. strings.po: #32887, #32890, #32897 removed (used only by that question). Existing slots keep their saved value until edited.
+- Fix (3): the interleave wizard's jitter input used heading #32344 "Interleave configured". Text of #32344 changed to "Jitter (J): most items to vary by" (it is used only there).
+- Fix (4): `utils/paths.save_json` now retries a failed write (3 attempts, 250 ms then 750 ms pauses) for both local and shared/network paths, and returns False (logged as an error) if the write is still failing, instead of returning True after a lost SMB write. Helpers `_write_file` and `_write_shared` hold the write steps. Simulated: fails-once and fails-twice then succeed; always-fails returns False.
+- Change (5): log noise. Per-tick carousel lines (skipping — currently playing / active schedule source, timed elapsed, intervals due, pop complete, appended next ep), `[ChannelManager] LOCAL STORAGE` and `Loaded N channel(s)` (constructed 2+ times a minute) and `[LibraryClient] Loaded N episodes` are now LOGDEBUG. The carousel still logs one INFO line per pop. `utils/logger.log` caches the `log_level` setting for 5 s instead of reading it on every call. In the 16-hour soak these lines were about 10,200 of the log's ~14,900 lines.
+- strings.po: 537 entries (ids in numeric order).
+- Note: debug lines show only when the addon Log Level setting is Debug and Kodi debug logging is on.
+
+## 3.1.71
+- Fix: Combo Block Movie and TV slots set to Random could repeat an item that was already in the queue (found while reviewing the 3.1.70 folder-slot fix). Random slots are now Random / No Repeat like the standalone channels.
+- TV slot (`build_combo_tv_slot`): each draw reshuffled the show's whole episode list and took the first, with no memory of what had been drawn, so an episode could be queued twice or played twice in a row. Each random show now keeps the episodes drawn this cycle in state key `combo:<id>:slot:<id>:show:<id>:tv_played` (marked when drawn) and only draws an undrawn one. When the cycle completes, the next starts at once and episodes of that show still waiting in the queue count as drawn in it.
+- Movie slot (`build_combo_movie_slot`): movies were already marked drawn at build time, so no repeat inside a cycle; at the cycle wrap the reset list ignored movies still waiting in the queue. Those now count as drawn in the new cycle. Sequential slots are unchanged.
+- Both functions take an optional `host_queue` (passed through `build_one_slot` since 3.1.70). A repeat is only possible when a show/movie slot has no more items than the queue holds.
+- Replay simulation (random slot, 4000 draws, pools 4/8/15/30, queue 3-5): duplicates in queue — TV 519/958/528/1752, movies 70/188/44/750 with 3.1.70; 0 with 3.1.71. The 3.1.70 folder-slot replay still shows 0.
+- Existing combo state is read as-is; the first draw of an existing random TV show starts a fresh cycle (no `tv_played` key yet).
+- Not changed: the combo Folder slot still asks the "No Repeat" question (a random folder slot is always No Repeat since 3.1.70).
+
+## 3.1.70
+- Fix: a Combo Block Folder slot (random + No Repeat) could queue the same file twice. Found in a 16-hour carousel soak: the queue held "Cartoon College - Bugs Bunny Celebrity Chef" at two positions while six of the folder's 15 files were still unplayed. Root cause: `ComboQueueBuilder.build_one_slot` never received the queue it appends to, so `_fetch_folder_items` called `FolderQueueBuilder.build` without `queued_files`, and a folder's played list is only updated when a file is consumed (the same class of defect as #18, in the combo slot path).
+- `build_one_slot(channel, slot_index, host_queue=None)` now takes the queue; `_fetch_slot_items` and `_fetch_folder_items` pass it down. The slot's files already in the queue (matched by `_folder_state_id`) are excluded from the draw. service.py `_handle_combo_slot` and carousel.py `_handle_combo_slot_pop` pass their queue; scheduler.py `fire_block` passes the items gathered so far.
+- When every file still unplayed in the cycle is already queued (No Repeat + recycle), the next cycle starts immediately (played list cleared via `record_folder_file_played(id, None)`) and the draw avoids queued files. Only if the folder has no more files than the queue holds is a repeat allowed.
+- New debug log line per draw: `[ComboQueueBuilder] folder slot <id>: drew '<file>' (excluded N queued file(s))`.
+- Replay simulation (random + No Repeat, pools 3/6/15, queue 3/6, 4000 draws each): duplicates in queue 1232-2541 before, 0 after.
+- Not changed (found while checking): `build_combo_tv_slot` draws a random episode with no memory of what is queued or played, so a small random TV slot can repeat. The movie slot marks files played when drawn and is unaffected. Candidate for 3.1.71.
+
+## 3.1.69
+- Fix: editing a TV or Serial channel so that its show list changed (a show added or removed, shows reordered, or an episode exclusion changed) rebuilt the queue from a zero cursor, so every show restarted at S01E01 and a Serial channel restarted at its first show. The path was unchanged since at least 3.1.43. `update_channel` now calls the new `ChannelManager._capture_edit_positions()` before the rebuild: it records each kept sequential show's next queued episode and the show at the head of the queue, and the rebuild resumes from them (`starting_points` copy + `start_show_index`; the saved definition is not modified). New shows have no queued episode and start at S01E01. If the head show was removed, the next surviving show continues. Explicit starting episodes chosen in the wizard override the captured ones. Edits that do not change the show list, and mode changes (randomize/recycle/type, which still wipe state), are unaffected. Serial shows already finished stay finished; with recycle they return after the last show.
+- Feature: the Serial wizard now offers "Set a starting episode for <show>?" for each show new to the channel (every show when creating). Shows already in the channel keep their position. The season/episode picker is now the shared `ask_starting_episode()` in ui/dialogs.py, used by both the TV and Serial wizards (the TV wizard's inline copy was removed; behaviour unchanged). No new strings.
+- Not changed: a queue-size-only or interleave-only edit still rebuilds from a zero cursor (same root cause, not part of this fix).
+
+## 3.1.68
+- Fix: the Visibility question (all TV, Movie, Folder and Serial wizards) showed the list "Yes / No / Done", which did not say what it meant. It now asks **Show this channel in your channel list?** with **Show / Hide / Cancel**. The choice logic is unchanged (Show = visible, Hide = hidden, Cancel/Back leaves the wizard); the carousel and source guards still apply. Strings #32221, #32222 and #32223 were restored (they had been removed as unused in 3.1.62 although they were the intended labels), and #32933 "Cancel" was added.
+- Change: the Folder wizard no longer asks "No Repeat" after the playback order. A Random folder always plays every file once before any repeat, so the answer was redundant: Random now saves no-repeat on, Sequential saves it off. (The Combo Block folder-slot wizard still asks it; unchanged.)
+- strings.po: 540 entries.
+
+## 3.1.67
+- Fix: the Combo Block movie-slot "Exclude Movies?" question showed its heading text twice (same mistake fixed in the Movie wizard in 3.1.63); the body now uses #32594. No other change.
+
+## 3.1.66
+- Fix: random TV and Movie channels could re-queue an item that was already waiting in the queue, or the one just played, when a new cycle started (the same problem fixed for folders in 3.1.57). The movie back-to-back guard only looked at the queue being built, which is empty for a one-item replacement, and the TV random draw after a reset picked from the whole show. Replacements now draw first from items that are not in the host queue and are not the item just consumed, then relax those two rules only when the pool leaves no other choice (a pool no larger than the queue size cannot avoid repeats). Every item is still played once per cycle: skipped-over items stay in the cycle and are drawn later.
+- Applies to: random Movie channels, random TV shows in Round Robin channels (replacement and skip), and Movie / TV sources interleaved into another channel (the host queue is used for the check). Sequential, Serial, Folder and initial queue builds are unchanged.
+- Code: new `ChannelManager._queued_ids()` helper; `_replacement_movie` and `_replacement_tv` pass the host queue and the consumed item to the movie builder (`MovieQueueBuilder.build_one(queued_ids, consumed_id)`) and to `_pick_one_ep_no_slot_advance(queued_ids, consumed_id)`. All new parameters are optional.
+- Simulation (3000 replacements, queue 10): 15 movies, 595 duplicates in queue and 145 immediate repeats before, 0 and 0 now; 30 movies 163/20 before, 0/0 now. Random TV show of 15 episodes: 632 duplicates before, 0 now.
+- No string changes.
+
+## 3.1.65
+- Cleanup: removed the stray `<settings version="2"/>` element from the addon.xml metadata extension. Kodi never read it; settings are defined entirely by resources/settings.xml (unchanged).
+- Cleanup: Auto-Create Channels no longer reads the nonexistent `default_recycle` setting (two places); channels always recycle. The settings-confirmation screen now takes its values from `_get_defaults()` instead of repeating the same setting reads (removes duplicate code).
+- Fix: the Auto-Create settings-confirmation screen showed the paragraph from #32645 ("For each genre, an interleaved channel will be created...") after "Recycle:" because its Yes constant pointed at #32645 instead of #32607 ("Yes"). It now shows "Recycle: Yes". The unused `_S_NO` constant (also pointing at a wrong string) was removed.
+- No strings.po changes.
+
+## 3.1.64
+- New: channel names must be unique. Right after the name is entered in Create Channel or Edit Channel, the name is checked against every other channel (hidden channels and Combo Blocks included; case and surrounding spaces ignored). If it is taken, a message (#32932, "A channel named '{0}' already exists. Please choose a different name.") is shown and the name box opens again with the entered text so it can be changed; Cancel leaves the wizard. Editing a channel and keeping its own name is allowed.
+- New public `ChannelManager.channel_name_exists(name, exclude_id="")`; the create and edit wizards share one helper `_ask_channel_name` in ui/channels.py (replaces two inline name prompts). Auto-Create already skipped names that exist and is unchanged.
+- Existing channels that already share a name are not touched; they only get the check the next time one is edited and renamed.
+- strings.po: added #32932 (536 entries).
+
+## 3.1.63
+- Fix: the Movie wizard's "Exclude Movies?" question showed the heading text twice; the body now uses #32594 ("Exclude specific movies from this channel? Excluded movies will never play."), restored in strings.po.
+- Fix: removing a Combo Block slot now asks with #32895 ("Remove Slot {0}?"), restored with a {0} placeholder instead of the unfinished "{slot name}" text. It replaced a hand-built "Remove Slot [TV] Show?" line.
+- New: editing a Combo Block that is already used by another channel (interleave or schedule) now shows #32877, rewritten to match what the code does: "This Combo Block is used by '{0}'. Items already in that channel's queue will not change; your edits apply to items added from now on."
+- Fix: the Combo Blocks separator in the Schedule wizard's source picker used the nonexistent #32822 and showed "── ──"; it now uses #32866 "Combo Block", as the Interleave wizard does.
+- Not restored on purpose: #32878 (combo owned by another channel). The interleave and schedule pickers already leave out combos owned by other channels, so the message could never be reached. #32811 (sort-alphabetically confirm) left as is, per request.
+- strings.po: 532 -> 535 entries. Re-scan of every .py/.xml/.json/.txt file: the only strings with no reference are #32840-#32843 (kept for the planned schedule ticker); every referenced ID exists.
+
+## 3.1.62
+- Cleanup: removed 90 unused strings from strings.po (622 -> 532 entries, numeric order kept). Each ID was checked against every .py, .xml, .json and .txt file in the addon (code, settings.xml, skins, addon.xml); none of the removed IDs is referenced anywhere. They were leftovers from earlier versions: the pipe-delimited option lists replaced in 3.1.60 (#32067, #32087, #32089), the old interleave remove/circular/nesting dialogs, soft-stop schedule text, recycle and "when all played" options, the old filter/surprise-me/exclusion texts, backup/restore and cache menu leftovers, #32824 and others. No code change.
+- Kept on purpose: #32840-#32843 ("Tonight at", "Tomorrow at", "{0} at {1}", "Special programming on"), which are unreferenced today but are the phrases for the planned schedule ticker overlay.
+- Found, not fixed here: ui/schedule_wizard.py line 429 builds the Combo Blocks separator in the source picker from #32822, which does not exist in strings.po (it never did), so the separator shows as "── ──". Reserved for its own fix.
+
+## 3.1.61
+- Fix: the four string settings with an empty default (Channel icon folder, Shared path, Backup path, ffprobe path) failed to load in 3.1.60 and logged "error reading the default value" repeatedly. The new settings format needs `<allowempty>true</allowempty>` in a string setting's constraints when the default is empty; added to all four.
+- Fix: the cache-age settings (Settings > Cache) were only written when the addon was opened or a cache was rebuilt, so after a Kodi start they still showed their default 0. The service now writes them at start-up (`_service_ensure_caches`) and refreshes them once an hour from its tick loop (`_tick_cache_ages`), so they are right when Settings is opened.
+- No string changes.
+
+## 3.1.60
+- Fix: the "Library cache age" and "Songs Cache Age" settings (Settings > Cache) never showed anything: they were empty legacy text fields that opened a keyboard, and nothing in the code ever wrote to them. They now display the age of each cache in whole days as read-only (disabled) integer fields. The new `LibraryClient.publish_cache_ages()` writes them (only when the value changed; a missing cache shows 0). It is called at the end of `build_local_cache` and `build_songs_cache` and on every addon start-up in `addon.py` main().
+- Change: resources/settings.xml converted from the legacy format to the current Kodi settings format (section/category/group, version 1) so a setting can be disabled (`<enable>false</enable>`). All 52 setting ids, labels, defaults and category order are unchanged, so saved user values carry over; Enum settings (Coming Up Next corner and lead time, Logo corner, size and opacity) keep their saved index values and are now integer settings with option lists. Action buttons keep their close-on-click behavior, and the ffprobe scan button is still Windows-only.
+- strings.po: added #32918-#32931, the option labels for those lists (Top Left, Top Right, Bottom Left, Bottom Right, 1-5 Minute(s), Small, Medium, Large, Low, High); they replace the literal `values=` text in the old settings.xml. Numeric order kept.
+- Revert path if the settings page misbehaves: 3.1.59 has the legacy settings.xml.
+
+## 3.1.59
+- Remove: the unused "Show Ticker" setting (`show_ticker`, #32049) and the lower-third ticker remnants. Nothing in the code ever read the setting. Removed: the setting from settings.xml; the hidden ticker control group 400 (controls 400-404) from the Default, Confluence and Estuary SmartChannels_Main.xml skin files; the `setVisible(False)` call on control 400 and the ticker comments in ui/side_panel.py; and the unused strings #32049, #32720, #32721 and #32722 from strings.po (numbering now has gaps, numeric order kept). No playback behavior change. Verified: all three skin files parse, every control id the Side Panel uses (100, 200, 300, 301) is still present in each skin, and no navigation reference points to a removed control.
+
+## 3.1.58
+- New: removing an interleave source now offers to reset it. In Manage Interleave, after a single source is removed (Edit/Remove Sources) a yes/no dialog asks whether to reset that source (#32916); after Remove All, one yes/no dialog asks whether to reset all the removed sources (#32917). Yes resets each one exactly as Reset Channel does, so the next time it is used as a source it starts from the beginning instead of continuing from where the earlier interleave left its cursor. No leaves the source untouched. Combo Blocks keep their existing ownership/reset handling and are not offered the dialog.
+- Refactor: new public `ChannelManager.reset_channel(channel_id)` holds the Reset Channel steps (clear cursor and folder cycle, clear resume points, empty the queue, reload, rebuild the queue). `Router.reset_channel` (context-menu Reset Channel, after its own confirmation) and the interleave wizard both call it; the inline copy in router.py is removed.
+- strings.po: added #32916 and #32917 (numeric order kept).
+
+## 3.1.57
+- Fix: random Folder channels were drawing in three fixed groups (3.1.55). With a queue of 10 and 15 files, each new cycle was seeded only from the files outside the queue, so the same 5 files always played together in the same group order (186 five-item stretches in an overnight carousel run contained only 3 distinct sets). A cycle now starts from the whole folder and each draw is random among the not-yet-drawn files that are not already in the host queue and are not the item just consumed; skipped files stay in the cycle for a later draw. Every file is still drawn once per cycle (no repeat before all have played), the queue never holds a duplicate when the folder is larger than the queue, and the order is no longer locked. Existing saved cycle state remains valid; Reset Channel starts clean.
+- No string changes.
+
+## 3.1.56
+- Change: a channel with Carousel enabled can no longer be hidden. Both paths are guarded and show the new string #32915, leaving the channel visible: the context-menu Toggle Visibility (router.py `toggle_channel_visibility`) and the wizards' visibility step (`ask_visibility` in ui/dialogs.py, used by the TV, Movie and Folder wizards). Previously the wizard silently switched Carousel off when Hidden was chosen, and the toggle hid the channel while leaving Carousel enabled. To hide a carousel channel, disable its Carousel in the wizard first, then edit again and choose Hidden. Channels that cannot have a carousel (Serial, Audio, Party, Combo) are unaffected.
+- strings.po: added #32915 (numeric order kept).
+
+## 3.1.55
+- Fix: random Folder channels repeated files before the whole folder had played (3.1.54). The initial queue is built without the random cycle, so the first cycle started from the full folder and could redraw files that were just played or were still waiting in the queue (15 files, queue of 10: Pete Puma and Animated Pastorals came back while three files had never been queued). A new cycle is now seeded from the files not in the host queue and not the item just consumed (`FolderQueueBuilder.build_one` takes `consumed_file`; `ChannelManager._replacement_folder` supplies it). If the queue already holds every file the whole folder is used and the most recent file is avoided. Also applies after Reset Channel, which clears the cycle and rebuilds the queue.
+- Existing cycle state saved by 3.1.54 is still valid; a stale list simply finishes and the next cycle seeds correctly. Use Reset Channel to start clean.
+- No string changes.
+
+## 3.1.54
+- New: random Folder channels are always Random/No Repeat. `FolderQueueBuilder.build_one` keeps a per-folder list of files not yet used this cycle (state key `{id}:__folder_cycle__`, public `ChannelManager.get_folder_cycle` / `set_folder_cycle`), draws from it at random, prefers files not already waiting in the host queue, and refills with the whole folder when empty — every file is used before any repeats, and consumed, skipped and carousel-popped items all advance the cycle. This also covers a folder interleaved as a source into another channel. Files removed from the folder are dropped from the list; new files join at the next refill. Sequential folders are unchanged.
+- Change: `clear_cursor` (used by Reset Channel and edit invalidation) now also clears the folder cycle so a reset starts a fresh cycle.
+- The wizard's "No Repeat" question is left in place; it still governs initial builds/top-up in `FolderQueueBuilder.build`.
+
+## 3.1.53
+- Fix: Folder channels now always recycle on 1-for-1 replacement. Previously the replacement was built with the channel's own queued files excluded, so when every file in the folder was already in the queue (folder smaller than the queue size, or any interleaved folder source) no replacement was returned: interleaved folder items were not replaced and a folder carousel pop would have been aborted. New `FolderQueueBuilder.build_one(channel, host_queue)` uses the queue the item will be appended to as the authority: sequential continues with the file after the last one from that folder (wrapping); random picks a file not already queued from that folder, or any file except the most recent when all are queued. `ChannelManager._replacement_folder` calls it; `get_one_replacement` passes the host queue through for both own and interleaved folder items. Initial builds, interleave weaves, combo folder slots and top-up (`FolderQueueBuilder.build`) are unchanged.
+- Refactor: `FolderQueueBuilder._make_item` / `_default_duration` replace the item-building and default-duration code that was inline in `build` (same item, no duplication with `build_one`).
+- New: visible Folder channels can enable Carousel. The Folder wizard now asks the carousel questions (same `ask_carousel` as the Movie wizard; hidden channels skip the step) and `carousel.py` accepts "folder" in its channel-type guard. The carousel's generic replacement path now passes the in-progress queue to `get_one_replacement`.
+- No string changes.
+
+## 3.1.52
+- Change: interleave sources must be hidden channels. The Manage Interleave source picker (ui/wizards/interleave.py) now lists only hidden channels (a carousel flag on a hidden channel still disqualifies it; Combo Blocks, always hidden, are unchanged). The "carousel channels are excluded" notice (#32824) is removed from that wizard — visible channels are excluded as a group, so it was misleading. When no eligible source exists the wizard shows the new string #32914 ("Interleave sources must be hidden channels...") and ends. Existing visible sources are left as they are and can still be edited or removed.
+- Change: a hidden channel that is in use as an interleave or schedule source can no longer be made visible. Both paths are guarded: the context-menu hide/unhide toggle (router.py `toggle_channel_visibility`) and the wizards' visibility step (`ask_visibility` in ui/dialogs.py, now given the manager by the TV, Movie, Folder and Serial wizards). Both show the new string #32913. A source that is already visible is untouched.
+- Refactor: new public `ChannelManager.get_source_usage(channel_id)` returns the interleave or schedule relationship for a source, or None. `ask_carousel` (ui/dialogs.py) used its own inline copy of the same two scans; it now calls the new method, with the same dialog and result as before.
+- strings.po: added #32913 and #32914 (numeric order kept). #32824 is no longer referenced by the code and is left in place.
+- Build On Top of 3.1.51 (new feature; 3.1.51 confirmed working). The 3.1.52 CUN runtime change that was tried and withdrawn is not included.
+
+## 3.1.51
+- Fix: Coming Up Next named the wrong "next" item when a scheduled block was about to play. Two causes in `_get_next_episode` (service.py): (1) a block fired onto the disk queue is not in the in-memory queue until the boundary reload, so the overlay read the stale queue and named the next regular episode; (2) an explicit rule skipped `_schedule_id` items whenever the current item was regular content. The rule is removed, and when a block reload is pending the overlay uses the block's leading items from the disk queue (via the public `get_channel_queue`).
+- Silent items are still never named as the next item (unchanged). The "Suppress Coming Up Next during silent interleave items" setting (#32074) still governs only the overlay while a silent item is playing (unchanged). If every block item is silent, the overlay falls back to the next regular item.
+- Build On Top of 3.1.50 (separate defect; 3.1.50 skip fix confirmed working from log).
+
+## 3.1.50
+- Fix: a scheduled block item skipped with the OSD Next button received a 1-for-1 replacement (an extra target-channel episode was appended) and was never counted toward its block, leaving the block's `active_block` state stale. Root cause: `_handle_skip` (service.py) did not check `_schedule_id`, unlike natural end and the carousel. Skipped block items are now popped with no replacement and counted via `_count_block_item(..., "skip")`, after the queue write. `_schedule_id` takes precedence over `_interleaved` (combo-sourced block items carry both). Skipped target-channel and interleaved (non-block) items still get their normal 1-for-1 replacement. The skip log line labels items BLOCK / COMBO / primary.
+- Build On Top of 3.1.49 (first attempt; root cause confirmed from log). A stale `active_block` already in state.json is not cleared retroactively.
+
+## 3.1.49
+- Fix: Add Schedule wizard (ui/schedule_wizard.py) now treats the channel it was opened from as the target — the Target picker is no longer shown. Combo Block, Audio and Party channels are never offered as targets (Combo Blocks are source-only). When editing a schedule, the picker is still shown and the schedule's current target stays selectable.
+- Fix: removed the "No other channels available as source." dialog (#32771) that appeared whenever a carousel channel existed, before the source picker. That string now appears only in the one case it describes: no eligible source exists, and the wizard then ends.
+- Change: schedule sources must be Hidden channels (plus Combo Blocks, which are always hidden, in their own group). Visible channels are no longer offered as sources. When editing, a schedule's existing source stays selectable even if it is a visible channel, so an edit never silently swaps it.
+
+## 3.1.48
+- Feature: hidden channels are tagged in the channel list when Show Hidden Channels is enabled — in both the standard Kodi channel list (router.py `list_channels`) and the Side Panel channel pane. One public helper, `ChannelManager.get_channel_list_label()`, builds the label for both. The tag text is string #32230 (`[H]`), added to strings.po by Mark's instruction.
+- strings.po: #32228 and #32229 (missing-durations log strings) were stranded at the end of the file after #32912; moved into numeric order after #32227, with #32230 following them. No text changed on #32228/#32229.
+- strings.po: #32783 sat before #32781/#32782; moved after #32782. All strings are now in numeric order. No text changed.
+
+## 3.1.47
+- Fix: choosing a new starting episode in Edit Channel > Select Starting Episodes did nothing. Root cause: `update_channel` saved `starting_points` into the channel definition, but only a fresh queue build reads them, and a starting-point-only edit does not trigger a rebuild. `reset_show_to_start` is generalised into `set_show_start(channel_id, show_id, start_episode_id)` (channel_manager.py; `reset_show_to_start` is now a thin wrapper), which splices the show's queue slots from the chosen episode, wrapping past the last episode, and sets `ep_pos` to continue after it. `update_channel` calls it for each show the user explicitly set in the wizard (sequential TV shows only; shows left on "Keep" are untouched).
+- Build On Top of 3.1.46 (separate defect from the Reset Show fix; 3.1.45/3.1.46 not yet tested).
+
+## 3.1.46
+- Fix: Edit Channel > Select Starting Episodes (TV wizard) showed "Keep: S01E01" and pre-selected S01E01 for every show. Root cause: the wizard read the per-show state record (`get_show_state`), which playback does not advance in 3.x (and which Reset Show sets to S01E01). The wizard now asks the new public `ChannelManager.get_show_next_queued_episode()`, which returns the show's first queued episode, so the Keep label and the preselected season/episode reflect the show's actual next episode. Shows with no queued episode fall back to "Keep current position" (#32599). No new strings. Combo block wizard (reads the saved starting point) is unchanged.
+
+## 3.1.45
+- Fix: Reset Show produced queue items missing `tvshowtitle`, `show_id`, `_show_id`, `channel_id`, `_channel_id`, `duration`, `_span` and `_span_ids` (side panel showed no show name). Root cause: the 3.1.43 splice inserted raw library episode dicts instead of normalised queue items. The splice in `reset_show_to_start` (channel_manager.py) now builds each replacement with `normalize_ep`, the same path as the normal queue build, and skips (and logs) episodes with no duration.
+- Fix: after a splice, `ep_pos` for the reset show was cleared, so the next 1-for-1 replacement would have re-queued S01E01. It is now set to the position after the last spliced episode (randomised shows record the spliced episodes in `ep_played` instead).
+- Build On Top of 3.1.44: root cause confirmed, only the implementation detail was wrong.
+
+## 3.1.44
+- Feature: episode context menu in the Side Panel. Pressing C/Menu on a TV episode in the right pane offers Reset Show (#32353); movies, audio, folder and interleaved items show no menu.
+- Fix: the Reset Show item in the standard Kodi episode context menu used #32334 ([Remove Interleave]); now uses #32353 (Reset Show).
+
+## 3.1.43
+- Fix: Reset Show rebuilt the whole queue from the cursor, which advanced other shows by the size of the old queue. `reset_show_to_start` now splices the existing queue in place, replacing only the reset show's slots, and no longer deletes or regenerates the queue file.
+
+## 3.1.42
+- Fix: Combo Block channels could be played directly if the plugin URL was constructed manually or called from an unexpected path. Reinstated guardrail in `play_channel()` in router.py — rejects combo channels with string #32896 before any playback logic runs. Context menu already omits Play for combo channels; this guard closes the back-door path.
+
+## 3.1.41
+- Fix: serial channels with a combo block interleaved were not appending replacements for primary items. Root cause: `_replacement_serial()` in channel_manager.py determined the next serial episode by inspecting `queue[-1]` (the tail item), but when combo block items are interleaved they sit at the tail after every primary item. The combo item's show_id belongs to the combo source, not the serial channel's show list, so the tail show lookup failed, the serial position was lost, and no replacement was appended. Fixed by scanning backward through the queue for the last non-interleaved item (`not item.get("_interleaved")`) instead of blindly using `queue[-1]`. This correctly ignores interleaved items from any source (combo, TV, movie, folder) and finds the true last serial episode as the anchor for the next replacement.
+
+## 3.1.40
+- Fix: Blank entry in Backup and Restore settings (label #32913, action browse_backup_path) was missed in 3.1.39 and still appeared in the UI, taking the user to the channel list when selected. Removed from settings.xml.
+
+## 3.1.39
+- Fix: Settings UI showed two entries for Channel Icon Folder and two for Backup Path — the text field plus a redundant [Browse...] action button. Removed the companion action settings from settings.xml, removed browse_icon_folder() and browse_backup_path() from router.py, removed their dispatch entries from addon.py, and removed string #32913 from strings.po. Both settings now behave like Shared Storage Path: a single editable text field, no browse button.
+
 ## 3.1.38
 - Fix: Season 0 / Specials could not be added as exceptions in the channel wizard's Add Exceptions dialog. Root cause: `e.get("season")` returns `0` for Season 0, which is falsy in Python, so the list comprehensions in `build_episode_filter` and `build_episode_exclusions` (dialogs.py) silently excluded all Season 0 episodes. Fixed both occurrences: `if e.get("season")` → `if e.get("season") is not None`.
-- Fix: Channel Icon Folder and Backup Path settings could not be cleared or typed into freely because they used Kodi's `type="folder"` widget, which has no delete/clear affordance. Changed both settings to `type="text"` so the user can edit or clear the path directly, and added a companion `[Browse...]` action button for each (new string #32913) that opens Kodi's native folder-picker dialog and writes the chosen path back to the setting. New router actions `browse_icon_folder` and `browse_backup_path` handle the picker; both registered in addon.py dispatch table.
+- Fix: Channel Icon Folder and Backup Path settings could not be cleared or typed into freely because they used Kodi's `type="folder"` widget, which has no delete/clear affordance. Changed both settings to `type="text"` so the user can edit or clear the path directly.
 
 ## 3.1.37
 - Fix: Coming Up Next overlay incorrectly appeared when a non-SmartChannels player (e.g. IPTV/NextPVR) started playback while no SmartChannels channel was playing. Root cause: now_playing.json was never cleared on stop, so onAVStarted mis-identified the foreign playback as an active SmartChannels session, loaded the old queue, started the position poll, and CUN fired against stale queue data. Fix: added SmartPlayer.clear_now_playing() in player.py (sets active_channel_id to None in the local now_playing.json). Called from onPlayBackStopped in service.py, before any stop-reason guard, so it fires unconditionally on every stop.
