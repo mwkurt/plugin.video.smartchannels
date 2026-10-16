@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<addon id="plugin.video.smartchannels" version="3.1.110" name="Smart TV Channels" provider-name="mwkurt">
+  <requires>
+    <import addon="xbmc.python" version="3.0.0"/>
+  </requires>
+  <extension point="xbmc.python.pluginsource" library="addon.py">
+    <provides>video</provides>
+  </extension>
+  <extension point="xbmc.service" library="service.py"/>
+  <extension point="xbmc.addon.metadata">
+    <summary lang="en_GB">Create custom TV channels from your Kodi library</summary>
+    <description lang="en_GB">Turn your own Kodi library into channels that play like broadcast TV. Build TV show channels (round robin or serial), movie, folder, audio and party channels, each with a rolling queue that is topped up as items play. Mix channels together by interleaving items from other channels, combine different content in Combo Blocks, schedule blocks of programming, and let a channel resume where you left off. Works with the local files in your library and with shared network storage.</description>
+    <platform>all</platform>
+    <license>GPL-2.0-only</license>
+    <language>en</language>
+    <news>3.1.110: a channel another device is playing cannot be edited, reset or deleted from here; the free-channel notice also arrives while you watch something else. 3.1.109: only one device at a time can play a channel; a second device is told, and gets a notice when the channel is free. 3.1.108: a Combo Block TV slot with several shows can now take turns, one show per cycle. 3.1.107: Combo Block TV slots no longer draw an episode that is already waiting in the queue. 3.1.106: a scheduled block now reloads the playing channel even when old blocks are left over in the saved state. 3.1.105: choosing a drive-letter folder (D:\) now warns that other devices cannot open it. 3.1.104: a scheduled Combo Block now plays as a whole block, each slot in order. 3.1.103: a schedule now fires only on the device that is playing its target channel. 3.1.102: a show missing from a TV channel queue is put back automatically after start; the shared storage message is logged once. 3.1.101: the missing durations viewers show a proper empty message and correct episode details. 3.1.100: an episode with an unreadable duration is skipped and logged instead of shrinking the queue. 3.1.99: filters gain is, is not, contains and equals, greater than, less than comparisons; AND binds before OR. 3.1.98: changing the Shared storage path now offers the data copy the first time. 3.1.97: folder pickers for the shared, backup and icon folders. 3.1.96: network folder paths for icons and ffprobe. 3.1.95: Backup and Restore accept Windows network paths. 3.1.94: Repair Queue Paths.</news>
+    <assets>
+      <icon>icon.png</icon>
+      <fanart>fanart.jpg</fanart>
+    </assets>
+  </extension>
+</addon>

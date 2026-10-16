@@ -18,6 +18,14 @@ Requires Kodi 21 (Omega) or newer. Video add-on, Python 3.
 - **Several devices:** point every device at one shared folder so they use the same channels and queues.
 - **Backup and restore** of all add-on data.
 
+## Install
+
+Do **not** use the green *Code > Download ZIP* button: that zip has the wrong folder name and Kodi will refuse it ("invalid structure").
+
+1. Open the **[Releases](../../releases/latest)** page and download the file named `plugin.video.smartchannels-<version>.zip` (under *Assets*).
+2. In Kodi: **Settings > Add-ons > Install from zip file** (allow *Unknown sources* if asked) and pick the downloaded zip.
+3. Restart Kodi after installing or updating.
+
 ## Quick start
 
 1. Install the add-on and open **Settings > Channels**.

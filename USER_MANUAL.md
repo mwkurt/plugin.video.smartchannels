@@ -1,10 +1,12 @@
 # Smart TV Channels – User Manual
 
-Version 3.1.101 · For Kodi 21 (Omega) and newer. Smart TV Channels turns your own Kodi library into broadcast-style channels that play back to back, remember where you stopped, and keep a rolling line-up.
+Version 3.1.101 · For Kodi 21 (Omega) and newer
+
+---
 
 ## 1. What Smart TV Channels Does
 
-You build **channels**. Each channel plays its shows, movies, music or files one after another, keeps a rolling line-up, remembers where you stopped, and can show a "Coming Up Next" notice and a channel logo while you watch.
+Smart TV Channels turns your own Kodi library into broadcast-style television. You build **channels**. Each channel plays its shows, movies, music or files one after another, keeps a rolling line-up, remembers where you stopped, and can show a "Coming Up Next" notice and a channel logo while you watch.
 
 You can have a channel of nothing but one sitcom, a "1980s Comedy" channel made from many shows, a movie channel, a cartoon block that is dropped into other channels, or a music channel.
 
@@ -12,7 +14,7 @@ You can have a channel of nothing but one sitcom, a "1980s Comedy" channel made 
 
 - Kodi 21 (Omega) or newer.
 - A Kodi video library with your TV shows and movies scanned in. For music channels, a Kodi music library.
-- **Episode durations:** each TV episode needs a `.nfo` file (the normal Kodi kind) that holds the episode length. Episodes without a readable length are skipped. See section 17.
+- **Episode durations:** each TV episode needs a `.nfo` file (the normal Kodi/Tiny Media Manager kind) that holds the episode length. Episodes without a readable length are skipped. See section 17.
 
 To install, use Kodi's *Add-ons > Install from zip file*, choose the add-on zip and wait for the "Add-on installed" message.
 
@@ -27,13 +29,19 @@ To install, use Kodi's *Add-ons > Install from zip file*, choose the add-on zip 
 
 ## 4. Key Ideas
 
-- **Channel.** A saved set of rules for what to play and in what order.
-- **Queue.** The list of items a channel will play next. The first item is playing now. When an item ends it leaves the front of the queue and a new item is added at the back, so the queue stays the same length. A TV channel's queue always holds at least one episode of every show on the channel.
-- **Queue size.** The minimum number of items in a channel's queue (10 to 200). The queue can be a little longer so that every show gets its turn, and a channel with interleave always ends on a full cycle.
-- **Recycle.** When a show runs out of episodes, it starts again from the beginning (Folder channels always recycle).
-- **Resume.** If you stop a channel part-way through an item, it picks up at that point next time.
-- **Hidden channel.** A channel kept out of the normal list. Hidden channels are used as building blocks (interleave and schedule sources).
-- **Silent item.** An item that plays but is not announced in Coming Up Next, for example a short bumper.
+**Channel.** A saved set of rules for what to play and in what order.
+
+**Queue.** The list of items a channel will play next. The first item is playing now. When an item ends it leaves the front of the queue and a new item is added at the back, so the queue stays the same length. A TV channel's queue always holds at least one episode of every show on the channel.
+
+**Queue size.** The minimum number of items in a channel's queue (10 to 200). The queue can be a little longer so that every show gets its turn, and a channel with interleave always ends on a full cycle.
+
+**Recycle.** When a show runs out of episodes, it starts again from the beginning (Folder channels always recycle).
+
+**Resume.** If you stop a channel part-way through an item, it picks up at that point next time.
+
+**Hidden channel.** A channel kept out of the normal list. Hidden channels are used as building blocks (interleave and schedule sources).
+
+**Silent item.** An item that plays but is not announced in Coming Up Next, for example a short bumper.
 
 ## 5. The Channel List
 
@@ -42,13 +50,13 @@ Choose **Open Smart Channels** (from the add-on or from Settings > Channels). Ea
 Open the context menu on a channel for these actions:
 
 | Action | What it does |
-| --- | --- |
+|---|---|
 | Channel Info | Shows the channel's type, shows, order, interleave and carousel details |
 | Play Channel | Starts the channel |
 | Edit Channel | Re-runs the wizard with your current choices filled in |
 | Reset Channel | Starts every show at S01E01 and clears resume points |
 | Delete Channel | Removes the channel |
-| Set Channel Icon | Picks a logo image for the channel (and Clear Icon removes it) |
+| Set Channel Icon | Picks a logo image for the channel (and Clear Icon to remove it) |
 | Toggle Visibility | Hides or shows the channel |
 | Add Schedule | Creates a scheduled block for this channel |
 | Manage Interleave | Adds or changes things woven into the channel |
@@ -56,9 +64,9 @@ Open the context menu on a channel for these actions:
 | Missing Durations (n) | Appears only when episodes were skipped for a missing length |
 | Move Up / Move Down | Changes the channel's place in the list |
 
-Which actions you see depends on the channel type. Audio and Party channels have no schedule or interleave actions, Serial channels have no interleave, and Combo Blocks can only be viewed, edited or deleted.
+Which actions you see depends on the channel type. For example, Audio and Party channels have no schedule or interleave actions, Serial channels have no interleave, and Combo Blocks can only be viewed, edited or deleted.
 
-**Side panel.** With **Settings > Advanced > Use Side Panel** switched on, selecting a channel opens a panel instead of the plain context menu. It shows what is coming up and the carousel status, and lets you play from any queued item. The plain-list menu above is used when the side panel is off.
+**Side panel.** With **Settings > Advanced > Use Side Panel** switched on, selecting a channel opens a panel instead of the plain context menu. It shows what is coming up, the carousel status, and lets you play from any queued item. The plain-list menu above is used when the side panel is off.
 
 **Sorting.** *Settings > Channels > Sort Channels A-Z* puts the list in alphabetical order. Move Up / Move Down fine-tunes it.
 
@@ -83,7 +91,7 @@ Plays movies in order or at random. You can use the whole movie library, pick sp
 
 ### 6.4 Folder Channel
 
-Plays every video file in a folder you choose, in order or at random. A random Folder channel plays every file once before repeating. Folder channels always recycle. Files without a duration use the **Default Folder Item Duration** from Settings > Channels (default 120 seconds).
+Plays every video file in a folder you choose, in order or at random. A random Folder channel plays every file once before repeating. Folder channels always recycle. Pick folders through Network Locations (smb://Server/Share/...) if the channel is played on more than one device: a drive letter such as D:\ exists only on the device that has that drive, and you are warned when you choose one. Files without a duration use the **Default Folder Item Duration** from Settings > Channels (default 120 seconds).
 
 ### 6.5 Audio Channel
 
@@ -105,6 +113,12 @@ A reusable group of items (called *slots*) that is **not played directly**. Each
 
 For each slot you choose the source, how many items it plays per turn, and whether it plays silently. Editing a Combo Block changes only items added from then on; items already queued do not change.
 
+**A TV slot with two or more shows** asks how they share the slot:
+- **Together: every show plays in every cycle.** Each show plays its own number of episodes (you are asked for it per show) every time the block comes round. Show A with 2 and Show B with 1 gives A, A, B, then A, A, B again.
+- **Taking turns: one show per cycle.** Only one show plays each time the block comes round, and the next show gets the next cycle. You enter one number, **Episodes per turn**, used for every show. With two shows and 2 episodes per turn the cycles go A, A, then B, B, then A, A, and so on. Any whole number from 1 up works, so an odd number needs no special handling.
+
+A slot with a single show always plays together. To change an existing slot, edit the Combo Block and go through that slot again; the question shows the current choice. Items already in a queue do not change.
+
 ## 7. Creating a Channel – Step by Step
 
 Settings > Channels > **Create New Channel**.
@@ -112,7 +126,7 @@ Settings > Channels > **Create New Channel**.
 1. **Name.** Names must be unique.
 2. **Type.** TV, Serial, Movie, Folder, Audio, Party Mode or Combo Block.
 3. **Pick content.**
-   - For TV and Serial, you are asked *Show All* or *Filter First*. Filter First narrows the list by genre, year and so on before you tick shows.
+   - For TV and Serial, your library may be large, so you are asked *Show All* or *Filter First*. Filter First narrows the list by genre, year and so on before you tick shows.
    - For Movies, choose all movies, specific movies, or a filtered set.
    - For Folder, Audio and Party, choose the folder or music source.
 4. **Order.** Round-Robin or Random (TV); show order (Serial); In Order or Random (Movie).
@@ -127,8 +141,10 @@ When you edit a channel, your shows keep their current position unless you chang
 
 Filters narrow the shows or movies you can pick from. They are available when choosing TV shows (Filter First), movies, and audio.
 
+**Filter types**
+
 | Filter | Comparisons |
-| --- | --- |
+|---|---|
 | Genre | is, is not, contains, does not contain |
 | Studio / Network | is, is not, contains, does not contain |
 | MPAA Rating | is, is not, contains, does not contain |
@@ -198,11 +214,11 @@ Settings > Channels > **Manage Schedules**, or Add Schedule from a channel's men
 3. **Source channel.** Where the items come from. Each target needs its own dedicated source channel.
 4. **Day.** Daily, Weekdays (Mon–Fri), Weekends (Sat–Sun), a single weekday, or **Once** on a date (DD/MM/YYYY).
 5. **Start time** (HH:MM, 24-hour).
-6. **Number of items.**
+6. **Number of items.** When the source is a Combo Block, this is the number of complete blocks: 2 plays the whole block twice, each slot in its listed order.
 
 The schedule list shows `[ACTIVE]` or `[OFF]`; select a schedule to edit, activate, deactivate or delete it. A conflict message appears if the target already has a schedule at that time. If you enter a time that has passed today, you are told the schedule will next fire tomorrow.
 
-A schedule waits until the item that is currently playing on the target channel finishes, then fires on the next one-minute check. While a block is waiting to play or playing, the channel shows "Now — Scheduled Block". Coming Up Next and the side panel also name upcoming blocks.
+A schedule fires only on the device that is playing its target channel; a device playing another channel, or nothing, never fires it. Once the start time has passed, it fires on the first one-minute check while the target channel is playing (once per day), and the block plays when the item that is currently playing finishes. If you start the target channel after the start time, the block fires then. While a block is waiting to play or playing, the channel shows "Now — Scheduled Block". Coming Up Next and the side panel also name upcoming blocks.
 
 ## 13. Auto-Create Channels
 
@@ -214,16 +230,18 @@ Settings > Channels > **Auto-Create Channels** builds many channels in one go.
 4. Optionally create interleaved TV + Movie channels, with a movie woven in every N episodes (1 to 20).
 5. Review the preview list, untick anything you do not want, and choose **Create selected**.
 
-Groups below the minimum appear in the list but are not ticked. Names that already exist are skipped. The global defaults (rotation, recycle, queue size) are applied to all new channels; change individual channels afterwards with Edit Channel. The library cache must exist first.
+Groups that fall below the minimum appear in the list but are not ticked. Names that already exist are skipped. The global defaults (rotation, recycle, queue size) are applied to all new channels; change individual channels afterwards with Edit Channel. The library cache must exist first.
 
 ## 14. Coming Up Next and the Channel Logo
 
 ### 14.1 Coming Up Next
 
-A small overlay that announces what plays after the current item. Settings > **Coming Up Next**:
+A small overlay that announces what plays after the current item.
+
+Settings > **Coming Up Next**:
 
 | Setting | Default |
-| --- | --- |
+|---|---|
 | Enable Coming Up Next overlay | On |
 | Corner position | Bottom Right |
 | Show overlay this far before episode ends | 2 Minutes (choices 1–5) |
@@ -241,7 +259,7 @@ Audio has its own set: Enable Audio Coming Up Next (On), seconds before end of s
 Shows the channel's logo in a corner for a few seconds when an item starts. Settings > **Channel Logo Overlay**:
 
 | Setting | Default |
-| --- | --- |
+|---|---|
 | Show Channel Logo During Playback | Off |
 | Logo Corner | Top Right |
 | Logo Size | Medium (Small, Medium, Large) |
@@ -281,7 +299,7 @@ The logo is found in this order: the image you chose with **Set Channel Icon** (
 
 - *Enable resume on stop:* default On.
 - *Background polling interval (seconds):* default 60.
-- *Ask before resuming:* default On. When on, you are asked whether to resume from the saved time.
+- *Ask before resuming:* default On. When on, you are asked "{item} — resume from {time}?".
 
 **Advanced**
 
@@ -292,9 +310,13 @@ The logo is found in this order: the image you chose with **Set Channel Icon** (
 - *Log Level:* 0 = Info, 1 = Debug, 2 = Warning.
 - *Delete All Addon Data:* removes channels, state, queues and caches from both the local and shared folder.
 
-**Backup & Restore:** *Backup folder path, Backup Addon Data, Restore Addon Data.* See section 18.
+**Backup & Restore**
 
-**Tools:** *ffprobe path, Scan Folder for Durations, View Missing Durations Log.* See section 17.
+- *Backup folder path, Backup Addon Data, Restore Addon Data.* See section 18.
+
+**Tools**
+
+- *ffprobe path, Scan Folder for Durations, View Missing Durations Log.* See section 17.
 
 ## 16. Using Several Devices (Shared Folder)
 
@@ -307,11 +329,13 @@ Two or more Kodi devices can share the same channels and queues.
 
 The shared folder then holds channels, play state, queues, the library cache and the missing-durations log. Both devices should use the same Kodi library (for example a shared MySQL database). Carousel channels are safe on two devices; each device checks before it advances a queue so a pop is not applied twice.
 
+**One device per channel.** Only one device can play a given channel at a time. The first device to start it owns it; a second device that tries to start the same channel sees a message naming the other device, and nothing plays. When the channel becomes free (the owner stops, switches channel, closes Kodi, or loses power for about 3 minutes) the second device gets a notification, even if it is playing another channel by then. Different channels can be played on different devices at the same time. A carousel channel that is playing on one device is not advanced by the other devices. A channel that another device is playing also cannot be edited, reset, deleted, have its interleave managed or have a show reset from the other devices; you get the same message and notification.
+
 **Tip.** If a network share is briefly unavailable, one episode may be skipped for that cycle and logged. See section 17.
 
 ## 17. Episode Durations and the Missing Durations Log
 
-Smart TV Channels reads each episode's running time from its `.nfo` file (`durationinseconds`). It needs the length to time the carousel and Coming Up Next.
+Smart TV Channels reads each episode's running time from its `.nfo` file (`durationinseconds`). It needs the length to schedule the carousel and Coming Up Next.
 
 **If an episode has no readable duration** it is skipped as if it had played, the next episode of that show takes its place, and the skip is logged. The queue stays the same size.
 
@@ -335,32 +359,36 @@ Take a backup before you use Delete All Addon Data, Restore, or change the share
 ## 19. Troubleshooting
 
 | Problem | What to try |
-| --- | --- |
+|---|---|
 | "The library cache has not been built yet" | Settings > Cache > Refresh Library Cache |
-| A show disappears from the rotation or an episode never plays | Check Missing Durations (n) for that channel; fix the .nfo |
+| A show disappears from the rotation or an episode never plays | Check Missing Durations (n) for that channel; fix the `.nfo` |
 | Files were renamed or moved and queued episodes will not play | Update the Kodi library, then Settings > Cache > Repair Queue Paths, and restart the channel |
-| Channel logo does not appear | Make sure the overlay is enabled and the channel has an icon. The logo shows when an item starts |
-| Coming Up Next does not appear for short items | Items shorter than the Minimum item duration are skipped; lower that setting |
+| Channel logo does not appear | Make sure the overlay is enabled, the channel has an icon, and the version is current. Logo shows when an item starts |
+| Coming Up Next does not appear for short items | Raise or lower *Minimum item duration*; items shorter than the limit are skipped |
 | "Combo Blocks cannot be played directly" | Use the block as an interleave or schedule source in another channel |
 | Cannot hide a channel | It is a carousel channel or a source in use. Disable the carousel or remove it as a source first |
-| Warned when deleting a source | Deleting it breaks the link to the channel that uses it; choose Delete anyway only if intended |
+| Cannot delete a source | You are warned that deleting it breaks the link; choose Delete anyway only if intended |
 | Two devices disagree about a queue | Make sure both use the same shared path and the same Kodi library, and restart both |
-| Anything else | Set Log Level to Debug, reproduce, and read kodi.log. Lines from this add-on begin with \[plugin.video.smartchannels\] |
+| Anything else | Set Log Level to Debug, reproduce, and read `kodi.log`. Lines from this add-on begin with `[plugin.video.smartchannels]` |
 
 ## 20. Glossary
 
-- **Carousel** – a channel that advances on its own.
-- **Combo Block** – a reusable group of slots used inside other channels.
-- **Interleave** – inserting other content every N items.
-- **Jitter** – random variation of N in interleave.
-- **Queue** – the line-up of items a channel will play.
-- **Recycle** – restarting a finished show from the beginning.
-- **Silent item** – an item not announced in Coming Up Next.
-- **Slot** – one source inside a Combo Block.
-- **Source channel** – a hidden channel that supplies items to another.
-- **Target channel** – a channel that receives scheduled items.
+**Carousel** – a channel that advances on its own.
+**Combo Block** – a reusable group of slots used inside other channels.
+**Interleave** – inserting other content every N items.
+**Jitter** – random variation of N in interleave.
+**Queue** – the line-up of items a channel will play.
+**Recycle** – restarting a finished show from the beginning.
+**Silent item** – an item not announced in Coming Up Next.
+**Slot** – one source inside a Combo Block.
+**Source channel** – a hidden channel that supplies items to another.
+**Target channel** – a channel that receives scheduled items.
+
+---
 
 ## Appendix A – Screenshot Shot List
+
+For the final published manual, capture these screens:
 
 1. Settings > Channels page.
 2. Channel list with several channels and icons.
