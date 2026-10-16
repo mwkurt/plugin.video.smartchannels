@@ -1,0 +1,225 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    SmartChannels_Main.xml  —  Confluence skin (720p / 1280x720)
+    ==============================================================
+    Two-pane layout scaled for 1280x720.
+      Left  (control 100) : Channel list  ~55% = 704px wide
+      Right (control 200) : Upcoming queue items  ~43% = 550px wide
+
+    Control IDs match Default/Estuary exactly — side_panel.py is skin-agnostic.
+-->
+<window type="dialog" id="9700">
+    <defaultcontrol always="true">100</defaultcontrol>
+    <zorder>1</zorder>
+
+    <controls>
+
+        <!-- ── Full-screen dimmed background ─────────────────────────── -->
+        <control type="image">
+            <left>0</left><top>0</top>
+            <width>1280</width><height>720</height>
+            <texture colordiffuse="CC000000">black.png</texture>
+        </control>
+
+        <!-- ── Header bar ────────────────────────────────────────────── -->
+        <control type="image">
+            <left>0</left><top>0</top>
+            <width>1280</width><height>50</height>
+            <texture colordiffuse="FF1A1A2E">black.png</texture>
+        </control>
+        <control type="label">
+            <left>30</left><top>12</top>
+            <width>620</width><height>30</height>
+            <label>Smart TV Channels</label>
+            <font>font16</font>
+            <textcolor>FFFFFFFF</textcolor>
+            <align>left</align>
+        </control>
+
+        <!-- ── Left pane background ──────────────────────────────────── -->
+        <control type="image">
+            <left>0</left><top>50</top>
+            <width>704</width><height>584</height>
+            <texture colordiffuse="E5111111">black.png</texture>
+        </control>
+
+        <!-- ── Left pane: Channel list (control 100) ─────────────────── -->
+        <control type="list" id="100">
+            <left>0</left><top>50</top>
+            <width>704</width><height>584</height>
+            <itemlayout height="72">
+                <control type="image">
+                    <left>12</left><top>9</top>
+                    <width>54</width><height>54</height>
+                    <texture fallback="DefaultVideoPlaylists.png">$INFO[ListItem.Icon]</texture>
+                </control>
+                <control type="label">
+                    <left>76</left><top>8</top>
+                    <width>614</width><height>32</height>
+                    <label>$INFO[ListItem.Label]</label>
+                    <font>font16</font>
+                    <textcolor>FFFFFFFF</textcolor>
+                    <selectedcolor>FFFFF000</selectedcolor>
+                    <align>left</align>
+                    <aligny>center</aligny>
+                </control>
+                <control type="label">
+                    <left>76</left><top>44</top>
+                    <width>614</width><height>20</height>
+                    <label>$INFO[ListItem.Label2]</label>
+                    <font>font12</font>
+                    <textcolor>FFB0B0B0</textcolor>
+                    <selectedcolor>FFDDDD00</selectedcolor>
+                    <align>left</align>
+                </control>
+            </itemlayout>
+            <focusedlayout height="72">
+                <control type="image">
+                    <left>0</left><top>0</top>
+                    <width>704</width><height>72</height>
+                    <texture colordiffuse="550088FF">black.png</texture>
+                </control>
+                <control type="image">
+                    <left>12</left><top>9</top>
+                    <width>54</width><height>54</height>
+                    <texture fallback="DefaultVideoPlaylists.png">$INFO[ListItem.Icon]</texture>
+                </control>
+                <control type="label">
+                    <left>76</left><top>8</top>
+                    <width>614</width><height>32</height>
+                    <label>$INFO[ListItem.Label]</label>
+                    <font>font16</font>
+                    <textcolor>FFFFF000</textcolor>
+                    <align>left</align>
+                    <aligny>center</aligny>
+                </control>
+                <control type="label">
+                    <left>76</left><top>44</top>
+                    <width>614</width><height>20</height>
+                    <label>$INFO[ListItem.Label2]</label>
+                    <font>font12</font>
+                    <textcolor>FFDDDD00</textcolor>
+                    <align>left</align>
+                </control>
+            </focusedlayout>
+            <onright>200</onright>
+            <onleft>100</onleft>
+        </control>
+
+        <!-- ── Divider ───────────────────────────────────────────────── -->
+        <control type="image">
+            <left>704</left><top>50</top>
+            <width>2</width><height>584</height>
+            <texture colordiffuse="FF333366">black.png</texture>
+        </control>
+
+        <!-- ── Right pane group (control 301) ────────────────────────── -->
+        <control type="group" id="301">
+            <left>708</left><top>50</top>
+            <width>572</width><height>584</height>
+            <visible>true</visible>
+
+            <control type="image">
+                <left>0</left><top>0</top>
+                <width>572</width><height>584</height>
+                <texture colordiffuse="E50D0D1A">black.png</texture>
+            </control>
+
+            <!-- "Upcoming" header (control 300) -->
+            <control type="label" id="300">
+                <left>16</left><top>10</top>
+                <width>540</width><height>28</height>
+                <label>Upcoming</label>
+                <font>font13</font>
+                <textcolor>FF8888CC</textcolor>
+                <align>left</align>
+            </control>
+
+            <control type="image">
+                <left>0</left><top>42</top>
+                <width>572</width><height>2</height>
+                <texture colordiffuse="FF333366">black.png</texture>
+            </control>
+
+            <!-- Right pane: Upcoming items list (control 200) -->
+            <control type="list" id="200">
+                <left>0</left><top>44</top>
+                <width>572</width><height>540</height>
+                <itemlayout height="84">
+                    <control type="image">
+                        <left>8</left><top>8</top>
+                        <width>44</width><height>66</height>
+                        <texture fallback="DefaultVideo.png">$INFO[ListItem.Art(thumb)]</texture>
+                    </control>
+                    <control type="label">
+                        <left>62</left><top>12</top>
+                        <width>498</width><height>32</height>
+                        <label>$INFO[ListItem.Label]</label>
+                        <font>font16</font>
+                        <textcolor>FFFFFFFF</textcolor>
+                        <selectedcolor>FFFFF000</selectedcolor>
+                        <align>left</align>
+                        <aligny>center</aligny>
+                    </control>
+                    <control type="label">
+                        <left>62</left><top>50</top>
+                        <width>498</width><height>22</height>
+                        <label>$INFO[ListItem.Label2]</label>
+                        <font>font12</font>
+                        <textcolor>FFB0B0B0</textcolor>
+                        <selectedcolor>FFDDDD00</selectedcolor>
+                        <align>left</align>
+                    </control>
+                </itemlayout>
+                <focusedlayout height="84">
+                    <control type="image">
+                        <left>0</left><top>0</top>
+                        <width>572</width><height>84</height>
+                        <texture colordiffuse="550088FF">black.png</texture>
+                    </control>
+                    <control type="image">
+                        <left>8</left><top>8</top>
+                        <width>44</width><height>66</height>
+                        <texture fallback="DefaultVideo.png">$INFO[ListItem.Art(thumb)]</texture>
+                    </control>
+                    <control type="label">
+                        <left>62</left><top>12</top>
+                        <width>498</width><height>32</height>
+                        <label>$INFO[ListItem.Label]</label>
+                        <font>font16</font>
+                        <textcolor>FFFFF000</textcolor>
+                        <align>left</align>
+                        <aligny>center</aligny>
+                    </control>
+                    <control type="label">
+                        <left>62</left><top>50</top>
+                        <width>498</width><height>22</height>
+                        <label>$INFO[ListItem.Label2]</label>
+                        <font>font12</font>
+                        <textcolor>FFDDDD00</textcolor>
+                        <align>left</align>
+                    </control>
+                </focusedlayout>
+                <onleft>100</onleft>
+                <onright>200</onright>
+            </control>
+
+        </control><!-- end group 301 -->
+
+        <!-- ── Footer hint bar ───────────────────────────────────────── -->
+        <control type="image">
+            <left>0</left><top>696</top>
+            <width>1280</width><height>24</height>
+            <texture colordiffuse="CC1A1A2E">black.png</texture>
+        </control>
+        <control type="label">
+            <left>30</left><top>699</top>
+            <width>1220</width><height>18</height>
+            <label>[B]ENTER[/B] Play  |  [B]→[/B] Browse upcoming  |  [B]←[/B] Back to channels  |  [B]BACK[/B] Close</label>
+            <font>font12</font>
+            <textcolor>FF888888</textcolor>
+            <align>left</align>
+        </control>
+
+    </controls>
+</window>

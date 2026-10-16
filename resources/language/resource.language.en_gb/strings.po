@@ -1,0 +1,2319 @@
+# Kodi Media Center language file
+# Addon Name: Smart TV Channels
+# Addon id: plugin.video.smartchannels
+# Addon Provider: SmartChannels
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+
+# ---- Settings: Channels ---- #
+
+msgctxt "#32000"
+msgid "Smart TV Channels"
+msgstr ""
+
+msgctxt "#32001"
+msgid "Channels"
+msgstr ""
+
+msgctxt "#32002"
+msgid "Create New Channel"
+msgstr ""
+
+msgctxt "#32003"
+msgid "Auto-Create Channels"
+msgstr ""
+
+msgctxt "#32004"
+msgid "Open Smart Channels"
+msgstr ""
+
+msgctxt "#32005"
+msgid "Channel Icon Folder"
+msgstr ""
+
+msgctxt "#32006"
+msgid "Default Folder Item Duration (seconds)"
+msgstr ""
+
+msgctxt "#32007"
+msgid "Manage Schedules"
+msgstr ""
+
+msgctxt "#32008"
+msgid "Sort Channels A-Z"
+msgstr ""
+
+# ---- Settings: Playback ---- #
+
+msgctxt "#32013"
+msgid "Playback"
+msgstr ""
+
+msgctxt "#32014"
+msgid "Default Minimum Queue Size"
+msgstr ""
+
+msgctxt "#32015"
+msgid "Randomize by Default"
+msgstr ""
+
+msgctxt "#32016"
+msgid "Reset watched status after each item plays"
+msgstr ""
+
+# ----Settings: Cache ---- #
+
+msgctxt "#32019"
+msgid "Cache"
+msgstr ""
+
+msgctxt "#32020"
+msgid "Maximum age before auto-refresh (days)"
+msgstr ""
+
+msgctxt "#32021"
+msgid "Auto-rebuild Kodi library cache on expiry"
+msgstr ""
+
+msgctxt "#32022"
+msgid "Library cache age"
+msgstr ""
+
+msgctxt "#32023"
+msgid "Refresh Library Cache"
+msgstr ""
+
+msgctxt "#32024"
+msgid "Songs Cache Age"
+msgstr ""
+
+msgctxt "#32025"
+msgid "Rebuild Songs Cache"
+msgstr ""
+
+msgctxt "#32026"
+msgid "Repair Queue Paths"
+msgstr ""
+
+msgctxt "#32027"
+msgid "Update every queued TV episode from the Kodi library, to fix files that were renamed or moved? Queue order and resume points are kept. Update the Kodi library first, and restart any channel that is playing afterwards."
+msgstr ""
+
+msgctxt "#32028"
+msgid "Queue repair: {0} fixed, {1} not found, {2} unchanged"
+msgstr ""
+
+# ---- Network ----#
+
+msgctxt "#32029"
+msgid "Network"
+msgstr ""
+
+msgctxt "#32030"
+msgid "Shared path (blank = Kodi addon data folder)"
+msgstr ""
+
+# ----Resume ---- #
+
+msgctxt "#32035"
+msgid "Resume"
+msgstr ""
+
+msgctxt "#32036"
+msgid "Enable resume on stop"
+msgstr ""
+
+msgctxt "#32037"
+msgid "Background polling interval (seconds)"
+msgstr ""
+
+msgctxt "#32038"
+msgid "Ask before resuming"
+msgstr ""
+
+# ---- Advanced ---- #
+
+msgctxt "#32043"
+msgid "Advanced"
+msgstr ""
+
+msgctxt "#32044"
+msgid "Show Next Episode in Channel View"
+msgstr ""
+
+msgctxt "#32045"
+msgid "Show Episode Count"
+msgstr ""
+
+msgctxt "#32046"
+msgid "Show hidden channels"
+msgstr ""
+
+msgctxt "#32047"
+msgid "Number of upcoming programs to show"
+msgstr ""
+
+msgctxt "#32048"
+msgid "Use Side Panel"
+msgstr ""
+
+msgctxt "#32050"
+msgid "Log Level (0=Info 1=Debug 2=Warning)"
+msgstr ""
+
+msgctxt "#32051"
+msgid "Delete All Addon Data"
+msgstr ""
+
+# ---- Backup and Restore ----#
+
+msgctxt "#32056"
+msgid "Backup & Restore"
+msgstr ""
+
+msgctxt "#32057"
+msgid "Backup folder path"
+msgstr ""
+
+msgctxt "#32058"
+msgid "[Backup Addon Data]"
+msgstr ""
+
+msgctxt "#32059"
+msgid "[Restore Addon Data]"
+msgstr ""
+
+# ---- Coming Up Next Overlay ----#
+
+msgctxt "#32064"
+msgid "Coming Up Next"
+msgstr ""
+
+msgctxt "#32065"
+msgid "Enable Coming Up Next overlay"
+msgstr ""
+
+msgctxt "#32066"
+msgid "Corner position"
+msgstr ""
+
+msgctxt "#32068"
+msgid "Show overlay this far before episode ends"
+msgstr ""
+
+msgctxt "#32069"
+msgid "Display duration (seconds)"
+msgstr ""
+
+msgctxt "#32070"
+msgid "Show show / movie name"
+msgstr ""
+
+msgctxt "#32071"
+msgid "Show season and episode number"
+msgstr ""
+
+msgctxt "#32072"
+msgid "Show episode title"
+msgstr ""
+
+msgctxt "#32073"
+msgid "Minimum item duration to show overlay (seconds, 0 = always show)"
+msgstr ""
+
+msgctxt "#32074"
+msgid "Suppress Coming Up Next during silent interleave items"
+msgstr ""
+
+msgctxt "#32075"
+msgid "Enable Audio Coming Up Next"
+msgstr ""
+
+msgctxt "#32076"
+msgid "Seconds before end of song"
+msgstr ""
+
+msgctxt "#32077"
+msgid "Overlay duration (seconds)"
+msgstr ""
+
+msgctxt "#32078"
+msgid "Minimum song duration (seconds)"
+msgstr ""
+
+# ---- Channel Logo Overlay ---- #
+
+msgctxt "#32083"
+msgid "Channel Logo Overlay"
+msgstr ""
+
+msgctxt "#32084"
+msgid "Show Channel Logo During Playback"
+msgstr ""
+
+msgctxt "#32085"
+msgid "Logo Corner"
+msgstr ""
+
+msgctxt "#32086"
+msgid "Logo Size"
+msgstr ""
+
+msgctxt "#32088"
+msgid "Logo Opacity"
+msgstr ""
+
+msgctxt "#32090"
+msgid "Margin from Edge (pixels)"
+msgstr ""
+
+msgctxt "#32091"
+msgid "Display duration (seconds)"
+msgstr ""
+
+# ---- UI strings ----
+
+msgctxt "#32201"
+msgid "Play Channel"
+msgstr ""
+
+msgctxt "#32202"
+msgid "Edit Channel"
+msgstr ""
+
+msgctxt "#32203"
+msgid "Delete Channel"
+msgstr ""
+
+msgctxt "#32204"
+msgid "Toggle Visibility"
+msgstr ""
+
+msgctxt "#32205"
+msgid "Manage Interleave"
+msgstr ""
+
+msgctxt "#32206"
+msgid "Channel deleted."
+msgstr ""
+
+msgctxt "#32207"
+msgid "Channel not found."
+msgstr ""
+
+msgctxt "#32208"
+msgid "No episodes found for this channel."
+msgstr ""
+
+msgctxt "#32209"
+msgid "Channel name cannot be empty."
+msgstr ""
+
+msgctxt "#32210"
+msgid "No TV shows selected."
+msgstr ""
+
+msgctxt "#32211"
+msgid "Are you sure you want to delete this channel?"
+msgstr ""
+
+msgctxt "#32212"
+msgid "No TV shows found in your library."
+msgstr ""
+
+msgctxt "#32213"
+msgid "Enter channel name:"
+msgstr ""
+
+msgctxt "#32214"
+msgid "Playback Order"
+msgstr ""
+
+msgctxt "#32215"
+msgid "Play episodes in random order?"
+msgstr ""
+
+msgctxt "#32216"
+msgid "Round-Robin"
+msgstr ""
+
+msgctxt "#32217"
+msgid "Random"
+msgstr ""
+
+msgctxt "#32219"
+msgid "Enter minimum queue size (10-200):"
+msgstr ""
+
+msgctxt "#32220"
+msgid "Visibility"
+msgstr ""
+
+msgctxt "#32221"
+msgid "Show this channel in your channel list?"
+msgstr ""
+
+msgctxt "#32222"
+msgid "Hide"
+msgstr ""
+
+msgctxt "#32223"
+msgid "Show"
+msgstr ""
+
+msgctxt "#32226"
+msgid "No channels have been created yet."
+msgstr ""
+
+msgctxt "#32227"
+msgid "No visible channels have been created yet."
+msgstr ""
+
+msgctxt "#32228"
+msgid "Clear the global missing durations log? This cannot be undone."
+msgstr ""
+
+msgctxt "#32229"
+msgid "Missing durations log cleared."
+msgstr ""
+
+msgctxt "#32230"
+msgid "[H]"
+msgstr ""
+
+
+
+# ---- Wizard: Show order ----
+
+msgctxt "#32240"
+msgid "Show Rotation Order"
+msgstr ""
+
+msgctxt "#32241"
+msgid "Keep Selection Order"
+msgstr ""
+
+msgctxt "#32242"
+msgid "Shuffle"
+msgstr ""
+
+msgctxt "#32243"
+msgid "Set Order Manually"
+msgstr ""
+
+msgctxt "#32244"
+msgid "Shuffle Again"
+msgstr ""
+
+msgctxt "#32245"
+msgid "Accept"
+msgstr ""
+
+msgctxt "#32246"
+msgid "Choose show for position {}:"
+msgstr ""
+
+msgctxt "#32247"
+msgid "Confirm Order"
+msgstr ""
+
+msgctxt "#32248"
+msgid "Start Over"
+msgstr ""
+
+msgctxt "#32249"
+msgid "Are you happy with this order?"
+msgstr ""
+
+
+
+# ---- Wizard: Show order edit-path ----
+
+msgctxt "#32260"
+msgid "Shows added: {}"
+msgstr ""
+
+msgctxt "#32261"
+msgid "Shows removed: {}"
+msgstr ""
+
+msgctxt "#32262"
+msgid "Current order (adjusted for changes):"
+msgstr ""
+
+msgctxt "#32263"
+msgid "Show list changed — review the order below."
+msgstr ""
+
+# ---- Wizard: Episodes Per Slot ----
+
+msgctxt "#32267"
+msgid "Episodes per slot for {0} (current: {1}):"
+msgstr ""
+
+msgctxt "#32268"
+msgid "Episodes Per Slot?"
+msgstr ""
+
+msgctxt "#32269"
+msgid "Each show currently plays 1 episode per combo unit.\nSet a custom count for any show?\n(e.g. Show A=2, Show B=1 → AA, B, AA, B ...)"
+msgstr ""
+
+msgctxt "#32270"
+msgid "Items Per Slot?"
+msgstr ""
+
+msgctxt "#32271"
+msgid "Each show currently plays 1 episode per rotation turn.\nSet a custom count for any show?\n(e.g. Show A=2, Show B=1 → AA, B, AA, B ...)"
+msgstr ""
+
+msgctxt "#32272"
+msgid "No, keep 1 each"
+msgstr ""
+
+msgctxt "#32273"
+msgid "Yes, customise"
+msgstr ""
+
+msgctxt "#32274"
+msgid "Items per slot (current: {0}):"
+msgstr ""
+
+msgctxt "#32275"
+msgid "This slot currently plays {0} item(s) per turn. Set a custom count?"
+msgstr ""
+
+msgctxt "#32276"
+msgid "Set Episodes Per Show?"
+msgstr ""
+
+msgctxt "#32277"
+msgid "Episodes per show for {0} (current: {1}):"
+msgstr ""
+
+# ---- Wizard: Per-show randomize ----
+
+msgctxt "#32280"
+msgid "Per-Show Playback Order?"
+msgstr ""
+
+msgctxt "#32281"
+msgid "Each show currently plays in sequential order.\nSet individual shows to play in random order?"
+msgstr ""
+
+msgctxt "#32282"
+msgid "No, all sequential"
+msgstr ""
+
+msgctxt "#32283"
+msgid "Playback order for {0}:"
+msgstr ""
+
+msgctxt "#32284"
+msgid "Play episodes of {0} in random or sequential order?"
+msgstr ""
+
+msgctxt "#32285"
+msgid "Sequential"
+msgstr ""
+
+# ---- Wizard: Channel type selection  ---- #
+
+msgctxt "#32300"
+msgid "Channel Type"
+msgstr ""
+
+msgctxt "#32303"
+msgid "Serial (each show plays fully before the next)"
+msgstr ""
+
+# ---- Serial wizard ---- #
+
+msgctxt "#32310"
+msgid "Select TV Shows for Serial Channel"
+msgstr ""
+
+msgctxt "#32311"
+msgid "Show Play Order"
+msgstr ""
+
+msgctxt "#32312"
+msgid "Set Order Manually (recommended)"
+msgstr ""
+
+# ---- Coming Up Next overlay ----
+
+msgctxt "#32330"
+msgid "No other channels available to interleave."
+msgstr ""
+
+msgctxt "#32340"
+msgid "Interleave mode"
+msgstr ""
+
+msgctxt "#32341"
+msgid "Fixed - insert exactly every N items"
+msgstr ""
+
+msgctxt "#32342"
+msgid "Random - insert every N +/- J items"
+msgstr ""
+
+msgctxt "#32343"
+msgid "How many items to insert at each slot?"
+msgstr ""
+
+msgctxt "#32344"
+msgid "Jitter (J): most items to vary by"
+msgstr ""
+
+# ---- Router strings ---- #
+
+msgctxt "#32350"
+msgid "Reset Channel"
+msgstr ""
+
+msgctxt "#32351"
+msgid "Reset \"{0}\" to the beginning? All shows restart from S01E01, movie rotation restarts from the first movie, and all resume points for this channel are cleared."
+msgstr ""
+
+msgctxt "#32353"
+msgid "Reset Show"
+msgstr ""
+
+msgctxt "#32354"
+msgid "Reset \"{0}\" back to S01E01? Other shows and interleaved movies are unaffected."
+msgstr ""
+
+msgctxt "#32355"
+msgid "\"{0}\" reset to S01E01."
+msgstr ""
+
+msgctxt "#32356"
+msgid "Building library cache..."
+msgstr ""
+
+msgctxt "#32358"
+msgid "Cache rebuild cancelled."
+msgstr ""
+
+msgctxt "#32359"
+msgid "Library cache rebuilt."
+msgstr ""
+
+msgctxt "#32360"
+msgid "Cache rebuild failed — check log for details."
+msgstr ""
+
+msgctxt "#32362"
+msgid "Backup"
+msgstr ""
+
+msgctxt "#32363"
+msgid "No backup folder configured. Open Settings now to set a backup folder path?"
+msgstr ""
+
+msgctxt "#32365"
+msgid "No files could be read."
+msgstr ""
+
+msgctxt "#32367"
+msgid "Backed up {0} file(s). File: {1}"
+msgstr ""
+
+msgctxt "#32368"
+msgid "Could not copy backup to: {0}"
+msgstr ""
+
+msgctxt "#32369"
+msgid "Restore"
+msgstr ""
+
+msgctxt "#32372"
+msgid "No backup files found in: {0}"
+msgstr ""
+
+msgctxt "#32373"
+msgid "Select Backup to Restore"
+msgstr ""
+
+msgctxt "#32374"
+msgid "Could not read the backup file."
+msgstr ""
+
+msgctxt "#32375"
+msgid "Backup file contains no data."
+msgstr ""
+
+msgctxt "#32376"
+msgid "Select Files to Restore"
+msgstr ""
+
+msgctxt "#32377"
+msgid "Confirm Restore"
+msgstr ""
+
+msgctxt "#32378"
+msgid "Overwrite {0} file(s)? Current data will be replaced."
+msgstr ""
+
+msgctxt "#32379"
+msgid "Restored: {0}"
+msgstr ""
+
+msgctxt "#32380"
+msgid "Failed: {0}"
+msgstr ""
+
+msgctxt "#32381"
+msgid "Kodi restart required for settings to take effect."
+msgstr ""
+
+msgctxt "#32382"
+msgid "Restore Complete"
+msgstr ""
+
+msgctxt "#32384"
+msgid "This will permanently delete all channels, state, queues and library cache from both the local and shared folder. Are you sure?"
+msgstr ""
+
+msgctxt "#32385"
+msgid "Deleted {0} file(s)."
+msgstr ""
+
+msgctxt "#32386"
+msgid "Copy files from shared folder back to Kodi addon data folder? [{0}]"
+msgstr ""
+
+msgctxt "#32387"
+msgid "Now using Kodi addon data folder."
+msgstr ""
+
+msgctxt "#32388"
+msgid "Migrated {0} file(s) to shared folder."
+msgstr ""
+
+msgctxt "#32389"
+msgid "Delete the migrated files from the old shared folder? [{0}]"
+msgstr ""
+
+msgctxt "#32390"
+msgid "Copy existing data to new shared folder? [{0}]"
+msgstr ""
+
+msgctxt "#32391"
+msgid "New storage path is not accessible. No files were transferred."
+msgstr ""
+
+msgctxt "#32392"
+msgid "Transfer incomplete. {0} of {1} file(s) copied. Check the log for details."
+msgstr ""
+
+# ---- Service strings ---- $
+
+msgctxt "#32400"
+msgid "{0} — resume from {1}?"
+msgstr ""
+
+msgctxt "#32402"
+msgid "Building library cache for the first time..."
+msgstr ""
+
+msgctxt "#32403"
+msgid "Refreshing library cache ({0} days old)..."
+msgstr ""
+
+msgctxt "#32404"
+msgid "Library cache updated."
+msgstr ""
+
+# ---- channels.py UI strings ---- #
+
+msgctxt "#32415"
+msgid "Channel Info"
+msgstr ""
+
+msgctxt "#32420"
+msgid "Type:      Movie Channel"
+msgstr ""
+
+msgctxt "#32421"
+msgid "Type:      Serial Channel"
+msgstr ""
+
+msgctxt "#32422"
+msgid "Type:      TV Channel"
+msgstr ""
+
+msgctxt "#32423"
+msgid "Rotation:  {0}"
+msgstr ""
+
+msgctxt "#32425"
+msgid "Movies:    {0}"
+msgstr ""
+
+msgctxt "#32426"
+msgid "Play order ({0} shows):"
+msgstr ""
+
+msgctxt "#32427"
+msgid "Shows ({0} total):"
+msgstr ""
+
+msgctxt "#32431"
+msgid "Interleave: {0} every {1}{2} eps{3}"
+msgstr ""
+
+msgctxt "#32432"
+msgid "Interleave: (channel not found)"
+msgstr ""
+
+msgctxt "#32433"
+msgid "{0} — Channel Info"
+msgstr ""
+
+msgctxt "#32434"
+msgid ">> Play Channel"
+msgstr ""
+
+msgctxt "#32436"
+msgid "You have changed the Repeat, Shuffle, or Channel Type setting for '{0}'. All saved resume points for this channel will be removed."
+msgstr ""
+
+msgctxt "#32437"
+msgid "Channel '{0}' created."
+msgstr ""
+
+msgctxt "#32439"
+msgid "Channel '{0}' updated."
+msgstr ""
+
+msgctxt "#32440"
+msgid "TV Shows"
+msgstr ""
+
+msgctxt "#32441"
+msgid "Movies"
+msgstr ""
+
+msgctxt "#32443"
+msgid "Show Selection"
+msgstr ""
+
+msgctxt "#32444"
+msgid "Your library has {0} shows. Filter first to narrow the list?"
+msgstr ""
+
+msgctxt "#32445"
+msgid "Show All"
+msgstr ""
+
+msgctxt "#32446"
+msgid "Filter First"
+msgstr ""
+
+msgctxt "#32447"
+msgid "Filter Results"
+msgstr ""
+
+msgctxt "#32448"
+msgid "{0} shows match. Now select which to include."
+msgstr ""
+
+msgctxt "#32450"
+msgid "Select TV Shows ({0} available)"
+msgstr ""
+
+msgctxt "#32451"
+msgid "No movies found in your library."
+msgstr ""
+
+msgctxt "#32452"
+msgid "Movie Selection Method"
+msgstr ""
+
+msgctxt "#32453"
+msgid "All Movies ({0} total)"
+msgstr ""
+
+msgctxt "#32454"
+msgid "Select Specific Movies"
+msgstr ""
+
+msgctxt "#32455"
+msgid "Select Genre"
+msgstr ""
+
+msgctxt "#32456"
+msgid "Select Movies"
+msgstr ""
+
+msgctxt "#32457"
+msgid "No movies selected."
+msgstr ""
+
+msgctxt "#32458"
+msgid "Movie Filters"
+msgstr ""
+
+msgctxt "#32459"
+msgid "Add filter rules to narrow movies? (Genre, Year, MPAA, Studio, Watched status)"
+msgstr ""
+
+msgctxt "#32460"
+msgid "No Filters"
+msgstr ""
+
+msgctxt "#32461"
+msgid "Add Filters"
+msgstr ""
+
+msgctxt "#32462"
+msgid "Movie Order"
+msgstr ""
+
+msgctxt "#32463"
+msgid "Play movies in random order?"
+msgstr ""
+
+msgctxt "#32464"
+msgid "In Order"
+msgstr ""
+
+msgctxt "#32470"
+msgid "Starting Point"
+msgstr ""
+
+msgctxt "#32471"
+msgid "Start from S01E01 (default)"
+msgstr ""
+
+msgctxt "#32472"
+msgid "Set Starting Points manually"
+msgstr ""
+
+msgctxt "#32473"
+msgid "Surprise Me! (random starting episodes)"
+msgstr ""
+
+msgctxt "#32475"
+msgid "Try Again"
+msgstr ""
+
+msgctxt "#32477"
+msgid "Keep: S{0:02d}E{1:02d}"
+msgstr ""
+
+msgctxt "#32478"
+msgid "Choose Episode"
+msgstr ""
+
+msgctxt "#32479"
+msgid "Set a starting episode for {0}?"
+msgstr ""
+
+msgctxt "#32480"
+msgid "Season {0}"
+msgstr ""
+
+msgctxt "#32481"
+msgid "Starting season for {0}{1}"
+msgstr ""
+
+msgctxt "#32482"
+msgid "Starting episode for {0}{1}"
+msgstr ""
+
+msgctxt "#32483"
+msgid "No episodes found for {0}."
+msgstr ""
+
+msgctxt "#32484"
+msgid " (current: Season {0})"
+msgstr ""
+
+msgctxt "#32487"
+msgid "Manage Filters"
+msgstr ""
+
+msgctxt "#32488"
+msgid "Match type"
+msgstr ""
+
+msgctxt "#32489"
+msgid "Remove last filter rule"
+msgstr ""
+
+msgctxt "#32490"
+msgid "Clear all filters"
+msgstr ""
+
+msgctxt "#32491"
+msgid "Done"
+msgstr ""
+
+msgctxt "#32492"
+msgid "Genre"
+msgstr ""
+
+msgctxt "#32493"
+msgid "Year"
+msgstr ""
+
+msgctxt "#32494"
+msgid "MPAA Rating"
+msgstr ""
+
+msgctxt "#32495"
+msgid "Studio"
+msgstr ""
+
+msgctxt "#32496"
+msgid "is"
+msgstr ""
+
+msgctxt "#32497"
+msgid "is not"
+msgstr ""
+
+msgctxt "#32498"
+msgid "Filter Type"
+msgstr ""
+
+msgctxt "#32499"
+msgid "Combine this rule with the previous rule using:"
+msgstr ""
+
+msgctxt "#32500"
+msgid "AND (both rules must match)"
+msgstr ""
+
+msgctxt "#32501"
+msgid "OR (either rule can match; AND is applied first)"
+msgstr ""
+
+msgctxt "#32502"
+msgid "No genres found in library."
+msgstr ""
+
+msgctxt "#32503"
+msgid "No MPAA ratings found."
+msgstr ""
+
+msgctxt "#32504"
+msgid "Select MPAA Rating"
+msgstr ""
+
+msgctxt "#32505"
+msgid "No studios found in library."
+msgstr ""
+
+msgctxt "#32506"
+msgid "Select Studio / Network"
+msgstr ""
+
+msgctxt "#32507"
+msgid "Year comparison"
+msgstr ""
+
+msgctxt "#32508"
+msgid "After year (greater than)"
+msgstr ""
+
+msgctxt "#32509"
+msgid "Before year (less than)"
+msgstr ""
+
+msgctxt "#32510"
+msgid "Exactly this year"
+msgstr ""
+
+msgctxt "#32511"
+msgid "Enter year (e.g. 1990):"
+msgstr ""
+
+msgctxt "#32512"
+msgid "Invalid year entered."
+msgstr ""
+
+msgctxt "#32513"
+msgid "Rating comparison"
+msgstr ""
+
+msgctxt "#32514"
+msgid "Minimum rating (>=)"
+msgstr ""
+
+msgctxt "#32515"
+msgid "Maximum rating (<=)"
+msgstr ""
+
+msgctxt "#32516"
+msgid "Exactly this rating"
+msgstr ""
+
+msgctxt "#32517"
+msgid "Enter rating (0-10):"
+msgstr ""
+
+msgctxt "#32518"
+msgid "Invalid rating (use 0-10)."
+msgstr ""
+
+msgctxt "#32519"
+msgid "contains"
+msgstr ""
+
+msgctxt "#32520"
+msgid "does not contain"
+msgstr ""
+
+msgctxt "#32521"
+msgid "{0} movies match your filters."
+msgstr ""
+
+msgctxt "#32522"
+msgid "Order:     {0}"
+msgstr ""
+
+msgctxt "#32523"
+msgid "Artists:   {0}"
+msgstr ""
+
+
+# ---- Folder Channel strings ---- #
+
+msgctxt "#32531"
+msgid "Folder"
+msgstr ""
+
+msgctxt "#32532"
+msgid "Select Media Folder"
+msgstr ""
+
+msgctxt "#32533"
+msgid "No folder selected."
+msgstr ""
+
+msgctxt "#32534"
+msgid "Folder not accessible: {0}"
+msgstr ""
+
+msgctxt "#32536"
+msgid "Folder Channel"
+msgstr ""
+
+msgctxt "#32537"
+msgid "Path: {0}"
+msgstr ""
+
+# ---- Unified Interleave strings ---- #
+
+msgctxt "#32545"
+msgid "Interleave Sources"
+msgstr ""
+
+msgctxt "#32547"
+msgid "[Add Source]"
+msgstr ""
+
+msgctxt "#32548"
+msgid "[Remove All Interleave]"
+msgstr ""
+
+msgctxt "#32549"
+msgid "Remove all interleave sources from this channel? This will strip all interleaved items from the queue."
+msgstr ""
+
+msgctxt "#32550"
+msgid "All interleave sources removed."
+msgstr ""
+
+msgctxt "#32551"
+msgid "Edit source: {0}"
+msgstr ""
+
+msgctxt "#32552"
+msgid "Remove this source"
+msgstr ""
+
+msgctxt "#32553"
+msgid "Silent (plays invisibly, not shown in Coming Up Next)"
+msgstr ""
+
+msgctxt "#32554"
+msgid "Visible (shown in queue and Coming Up Next)"
+msgstr ""
+
+msgctxt "#32555"
+msgid "[silent]"
+msgstr ""
+
+msgctxt "#32557"
+msgid "Source saved."
+msgstr ""
+
+msgctxt "#32560"
+msgid "[Edit / Remove Sources]"
+msgstr ""
+
+msgctxt "#32561"
+msgid "--- Channels with interleave configured ---"
+msgstr ""
+
+msgctxt "#32570"
+msgid "Set episode filters for individual shows?"
+msgstr ""
+
+msgctxt "#32571"
+msgid "Filter which episodes are queued for each show (watched status, season, air date)."
+msgstr ""
+
+msgctxt "#32572"
+msgid "Episode filters: {0}"
+msgstr ""
+
+msgctxt "#32573"
+msgid "Watched only"
+msgstr ""
+
+msgctxt "#32574"
+msgid "Unwatched only"
+msgstr ""
+
+msgctxt "#32575"
+msgid "Season"
+msgstr ""
+
+msgctxt "#32576"
+msgid "First Aired (YYYY-MM-DD)"
+msgstr ""
+
+msgctxt "#32577"
+msgid "Enter date (YYYY-MM-DD)"
+msgstr ""
+
+msgctxt "#32579"
+msgid "Watched / Unwatched"
+msgstr ""
+
+msgctxt "#32580"
+msgid "No episode filters set"
+msgstr ""
+
+msgctxt "#32581"
+msgid "No, skip filters"
+msgstr ""
+
+msgctxt "#32582"
+msgid "Yes, set filters"
+msgstr ""
+
+msgctxt "#32583"
+msgid "Invalid date. Please enter in YYYY-MM-DD format (e.g. 1960-01-01)."
+msgstr ""
+
+msgctxt "#32584"
+msgid "No seasons found for this show."
+msgstr ""
+
+msgctxt "#32585"
+msgid "Exclude Episodes?"
+msgstr ""
+
+msgctxt "#32586"
+msgid "Exclude specific episodes from any show on this channel? You can choose which shows and which episodes to exclude."
+msgstr ""
+
+msgctxt "#32587"
+msgid "No, skip exclusions"
+msgstr ""
+
+msgctxt "#32588"
+msgid "Yes, set exclusions"
+msgstr ""
+
+msgctxt "#32589"
+msgid "Manage Exclusions — {} — {}"
+msgstr ""
+
+msgctxt "#32590"
+msgid "{} episode(s) excluded"
+msgstr ""
+
+msgctxt "#32591"
+msgid "No episodes excluded"
+msgstr ""
+
+msgctxt "#32592"
+msgid "Select episodes to EXCLUDE — {} S{:02d}"
+msgstr ""
+
+msgctxt "#32593"
+msgid "Exclude Movies?"
+msgstr ""
+
+msgctxt "#32594"
+msgid "Exclude specific movies from this channel? Excluded movies will never play."
+msgstr ""
+
+msgctxt "#32595"
+msgid "Select movies to exclude"
+msgstr ""
+
+msgctxt "#32596"
+msgid "Select show to manage exclusions"
+msgstr ""
+
+msgctxt "#32597"
+msgid "Exclude entire Season {}"
+msgstr ""
+
+msgctxt "#32598"
+msgid "Select individual episodes"
+msgstr ""
+
+msgctxt "#32599"
+msgid "Keep current position"
+msgstr ""
+
+msgctxt "#32600"
+msgid "Season {} — Exclude Options"
+msgstr ""
+
+msgctxt "#32601"
+msgid "Enable Carousel for this channel?"
+msgstr ""
+
+msgctxt "#32602"
+msgid "Carousel advances the queue automatically while you are not watching."
+msgstr ""
+
+msgctxt "#32603"
+msgid "Pop interval (minutes, minimum 1)"
+msgstr ""
+
+msgctxt "#32604"
+msgid "Items to remove per interval"
+msgstr ""
+
+msgctxt "#32605"
+msgid "Resume is cleared automatically for items the carousel moves past."
+msgstr ""
+
+msgctxt "#32606"
+msgid "Carousel"
+msgstr ""
+
+msgctxt "#32607"
+msgid "Yes"
+msgstr ""
+
+msgctxt "#32608"
+msgid "No"
+msgstr ""
+
+msgctxt "#32609"
+msgid "View Exclusions"
+msgstr ""
+
+msgctxt "#32611"
+msgid "No exclusions are set for any show or movie on this channel."
+msgstr ""
+
+msgctxt "#32612"
+msgid "Carousel:  Every {0} min, {1} item per pop"
+msgstr ""
+
+msgctxt "#32614"
+msgid "Next pop:  in {0} min"
+msgstr ""
+
+msgctxt "#32615"
+msgid "Next pop:  due now"
+msgstr ""
+
+msgctxt "#32616"
+msgid "Next pop:  not yet initialised"
+msgstr ""
+
+msgctxt "#32617"
+msgid "  Excluded: {0} episodes"
+msgstr ""
+
+msgctxt "#32619"
+msgid "  Excluded: {0} movies"
+msgstr ""
+
+msgctxt "#32622"
+msgid "Exclude specific episodes from "{0}" on this slot."
+msgstr ""
+
+# ---- Auto Create Channels ---- #
+
+msgctxt "#32630"
+msgid "What would you like to create channels for?"
+msgstr ""
+
+msgctxt "#32631"
+msgid "TV Shows only"
+msgstr ""
+
+msgctxt "#32632"
+msgid "Movies only"
+msgstr ""
+
+msgctxt "#32633"
+msgid "TV Shows and Movies"
+msgstr ""
+
+msgctxt "#32634"
+msgid "Group channels by:"
+msgstr ""
+
+msgctxt "#32636"
+msgid "Decade"
+msgstr ""
+
+msgctxt "#32637"
+msgid "Genre + Decade"
+msgstr ""
+
+msgctxt "#32638"
+msgid "Studio / Network"
+msgstr ""
+
+msgctxt "#32639"
+msgid "Minimum episodes per channel (0 = show all)"
+msgstr ""
+
+msgctxt "#32640"
+msgid "How many items must a group contain before a channel is created? Groups below this number will appear in the preview but won't be selected by default."
+msgstr ""
+
+msgctxt "#32641"
+msgid "Channel settings"
+msgstr ""
+
+msgctxt "#32642"
+msgid "The following global defaults will be applied to all created channels. You can change individual channels after creation via Edit Channel. The preview screen only shows candidates meeting the minimum threshold — set minimum to 0 to see all candidates."
+msgstr ""
+
+msgctxt "#32643"
+msgid "TV Rotation: {0}    Movie Rotation: {1}    Recycle: {2}    Queue Size: {3}"
+msgstr ""
+
+msgctxt "#32644"
+msgid "Also create interleaved TV + Movie channels?"
+msgstr ""
+
+msgctxt "#32645"
+msgid "For each genre, an interleaved channel will be created mixing TV episodes with movies from the same genre woven in every N episodes."
+msgstr ""
+
+msgctxt "#32646"
+msgid "Interleave every N episodes (e.g. 4):"
+msgstr ""
+
+msgctxt "#32647"
+msgid "Channels to create"
+msgstr ""
+
+msgctxt "#32648"
+msgid "{0} selected of {1}"
+msgstr ""
+
+msgctxt "#32649"
+msgid "{0} ({1} movies)"
+msgstr ""
+
+msgctxt "#32650"
+msgid "{0} ({1} shows, {2} episodes)"
+msgstr ""
+
+msgctxt "#32651"
+msgid "{0} ({1} shows + {2} movies)"
+msgstr ""
+
+msgctxt "#32652"
+msgid "{0} — below minimum ({1} items)"
+msgstr ""
+
+msgctxt "#32653"
+msgid "{0} — already exists"
+msgstr ""
+
+msgctxt "#32654"
+msgid "Create selected"
+msgstr ""
+
+msgctxt "#32655"
+msgid "Create {0} channels?"
+msgstr ""
+
+msgctxt "#32656"
+msgid "This will add {0} new channels to your channel list."
+msgstr ""
+
+msgctxt "#32657"
+msgid "Creating channels..."
+msgstr ""
+
+msgctxt "#32658"
+msgid "Creating channel {0} of {1}: {2}"
+msgstr ""
+
+msgctxt "#32660"
+msgid "{0} channels created successfully."
+msgstr ""
+
+msgctxt "#32661"
+msgid "{0} channels created. {1} skipped — channels with those names already exist."
+msgstr ""
+
+msgctxt "#32662"
+msgid "No channels to create"
+msgstr ""
+
+msgctxt "#32663"
+msgid "No groups were found in your library that meet the minimum threshold. Try lowering the minimum item count."
+msgstr ""
+
+msgctxt "#32664"
+msgid "Round Robin"
+msgstr ""
+
+msgctxt "#32665"
+msgid "{0}s"
+msgstr ""
+
+msgctxt "#32666"
+msgid "{0} TV"
+msgstr ""
+
+msgctxt "#32667"
+msgid "{0} Movies"
+msgstr ""
+
+msgctxt "#32668"
+msgid "{0}s TV"
+msgstr ""
+
+msgctxt "#32669"
+msgid "{0}s Movies"
+msgstr ""
+
+msgctxt "#32670"
+msgid "{0}s {1} TV"
+msgstr ""
+
+msgctxt "#32671"
+msgid "{0}s {1} Movies"
+msgstr ""
+
+msgctxt "#32672"
+msgid "{0} — TV + Movies"
+msgstr ""
+
+msgctxt "#32673"
+msgid "{0}s — TV + Movies"
+msgstr ""
+
+msgctxt "#32674"
+msgid "{0}s {1} — TV + Movies"
+msgstr ""
+
+msgctxt "#32675"
+msgid "Library not ready"
+msgstr ""
+
+msgctxt "#32676"
+msgid "The library cache has not been built yet. Please use Refresh Library Cache from the main screen first."
+msgstr ""
+
+msgctxt "#32677"
+msgid "Invalid frequency"
+msgstr ""
+
+msgctxt "#32678"
+msgid "Interleave frequency must be between 1 and 20."
+msgstr ""
+
+msgctxt "#32679"
+msgid "Invalid minimum"
+msgstr ""
+
+msgctxt "#32680"
+msgid "Minimum item count must be 0 or greater. Enter 0 to show all candidates."
+msgstr ""
+
+msgctxt "#32681"
+msgid "Starting Episodes"
+msgstr ""
+
+msgctxt "#32682"
+msgid "Randomising starting episodes..."
+msgstr ""
+
+msgctxt "#32683"
+msgid "Recycle"
+msgstr ""
+
+msgctxt "#32684"
+msgid "Stop"
+msgstr ""
+
+# ---- Side Panel (1.1.6a) ---- #
+
+msgctxt "#32690"
+msgid "> Play"
+msgstr ""
+
+msgctxt "#32691"
+msgid "Upcoming"
+msgstr ""
+
+msgctxt "#32692"
+msgid "No items in queue"
+msgstr ""
+
+msgctxt "#32693"
+msgid "S{0}E{1} — {2}"
+msgstr ""
+
+# ---- Channel icons ---- #
+
+msgctxt "#32700"
+msgid "Set Channel Icon"
+msgstr ""
+
+msgctxt "#32701"
+msgid "Clear Icon"
+msgstr ""
+
+# ---- Missing Duration Cache ---- #
+
+msgctxt "#32710"
+msgid "Missing Durations ({0})"
+msgstr ""
+
+msgctxt "#32711"
+msgid "Clear Missing Durations List"
+msgstr ""
+
+msgctxt "#32712"
+msgid "Clear the missing durations list for this channel? This does not affect the missing_durations.txt log file."
+msgstr ""
+
+msgctxt "#32713"
+msgid "Missing durations list cleared."
+msgstr ""
+
+msgctxt "#32714"
+msgid "No missing durations found for this channel."
+msgstr ""
+
+msgctxt "#32715"
+msgid "No missing durations have been recorded."
+msgstr ""
+
+
+
+# ---- Channel Scheduling ---- #
+
+msgctxt "#32730"
+msgid "Add Schedule"
+msgstr ""
+
+msgctxt "#32731"
+msgid "Schedule Name"
+msgstr ""
+
+msgctxt "#32732"
+msgid "Select Target Channel"
+msgstr ""
+
+msgctxt "#32733"
+msgid "Select Source Channel"
+msgstr ""
+
+msgctxt "#32734"
+msgid "Schedule Day"
+msgstr ""
+
+msgctxt "#32735"
+msgid "Start Time (HH:MM)"
+msgstr ""
+
+msgctxt "#32736"
+msgid "Number of Items"
+msgstr ""
+
+msgctxt "#32739"
+msgid "Schedule saved."
+msgstr ""
+
+msgctxt "#32740"
+msgid "Delete this schedule?"
+msgstr ""
+
+msgctxt "#32741"
+msgid "Schedule deleted."
+msgstr ""
+
+msgctxt "#32742"
+msgid "Conflict: target channel already has a schedule at this time: {0}"
+msgstr ""
+
+msgctxt "#32743"
+msgid "Source channel conflict: '{0}' is already using this source channel for a different target. Each target channel must have its own dedicated source channel."
+msgstr ""
+
+msgctxt "#32744"
+msgid "Daily"
+msgstr ""
+
+msgctxt "#32745"
+msgid "Weekdays (Mon-Fri)"
+msgstr ""
+
+msgctxt "#32746"
+msgid "Weekends (Sat-Sun)"
+msgstr ""
+
+msgctxt "#32747"
+msgid "Once"
+msgstr ""
+
+msgctxt "#32748"
+msgid "Tonight at"
+msgstr ""
+
+msgctxt "#32749"
+msgid "Now — Scheduled Block"
+msgstr ""
+
+msgctxt "#32750"
+msgid "This {0} at {1}"
+msgstr ""
+
+msgctxt "#32752"
+msgid "Edit Schedule"
+msgstr ""
+
+msgctxt "#32753"
+msgid "Activate Schedule"
+msgstr ""
+
+msgctxt "#32754"
+msgid "Deactivate Schedule"
+msgstr ""
+
+msgctxt "#32755"
+msgid "Schedules"
+msgstr ""
+
+msgctxt "#32756"
+msgid "[ACTIVE] {0}"
+msgstr ""
+
+msgctxt "#32757"
+msgid "[OFF]    {0}"
+msgstr ""
+
+msgctxt "#32758"
+msgid "No schedules defined."
+msgstr ""
+
+msgctxt "#32759"
+msgid "Invalid time format. Use HH:MM (e.g. 21:00)."
+msgstr ""
+
+msgctxt "#32761"
+msgid "Monday"
+msgstr ""
+
+msgctxt "#32762"
+msgid "Tuesday"
+msgstr ""
+
+msgctxt "#32763"
+msgid "Wednesday"
+msgstr ""
+
+msgctxt "#32764"
+msgid "Thursday"
+msgstr ""
+
+msgctxt "#32765"
+msgid "Friday"
+msgstr ""
+
+msgctxt "#32766"
+msgid "Saturday"
+msgstr ""
+
+msgctxt "#32767"
+msgid "Sunday"
+msgstr ""
+
+msgctxt "#32768"
+msgid "Weekdays"
+msgstr ""
+
+msgctxt "#32769"
+msgid "Weekends"
+msgstr ""
+
+msgctxt "#32770"
+msgid "No channels available."
+msgstr ""
+
+msgctxt "#32771"
+msgid "No other channels available as source."
+msgstr ""
+
+msgctxt "#32772"
+msgid "Name:   {0}"
+msgstr ""
+
+msgctxt "#32773"
+msgid "Target: {0}"
+msgstr ""
+
+msgctxt "#32774"
+msgid "Source: {0}"
+msgstr ""
+
+msgctxt "#32775"
+msgid "Day:    {0}  Time: {1}"
+msgstr ""
+
+msgctxt "#32776"
+msgid "Items:  {0}"
+msgstr ""
+
+msgctxt "#32778"
+msgid "Fire Date (DD/MM/YYYY)"
+msgstr ""
+
+msgctxt "#32779"
+msgid "Invalid date. Please enter a valid date in DD/MM/YYYY format."
+msgstr ""
+
+msgctxt "#32780"
+msgid "Date:   {0}"
+msgstr ""
+
+msgctxt "#32781"
+msgid "Move Up"
+msgstr ""
+
+msgctxt "#32782"
+msgid "Move Down"
+msgstr ""
+
+msgctxt "#32783"
+msgid "The time {0} has already passed today. The schedule will next fire tomorrow."
+msgstr ""
+
+# ---- Audio Channel ---- #
+
+msgctxt "#32800"
+msgid "Audio Channel"
+msgstr ""
+
+msgctxt "#32801"
+msgid "Party Mode"
+msgstr ""
+
+msgctxt "#32802"
+msgid "Filter by Artist"
+msgstr ""
+
+msgctxt "#32803"
+msgid "Filter by Genre, Year, Rating or other"
+msgstr ""
+
+msgctxt "#32804"
+msgid "No Filter (full library)"
+msgstr ""
+
+msgctxt "#32806"
+msgid "Album Order"
+msgstr ""
+
+msgctxt "#32807"
+msgid "Select folder of music files"
+msgstr ""
+
+msgctxt "#32808"
+msgid "Select Artists"
+msgstr ""
+
+msgctxt "#32809"
+msgid "(full library)"
+msgstr ""
+
+msgctxt "#32810"
+msgid "(filtered)"
+msgstr ""
+
+msgctxt "#32813"
+msgid "Artist"
+msgstr ""
+
+msgctxt "#32814"
+msgid "Album Artist"
+msgstr ""
+
+msgctxt "#32815"
+msgid "Album"
+msgstr ""
+
+msgctxt "#32816"
+msgid "Played Status"
+msgstr ""
+
+msgctxt "#32820"
+msgid "Unplayed (playcount = 0)"
+msgstr ""
+
+msgctxt "#32821"
+msgid "Played at least once (playcount > 0)"
+msgstr ""
+
+msgctxt "#32823"
+msgid "Carousel unavailable — this channel is a source for an active schedule. Carousel and schedule source cannot both be active on the same channel."
+msgstr ""
+
+msgctxt "#32825"
+msgid "Balanced (equal artist airtime)"
+msgstr ""
+
+msgctxt "#32826"
+msgid "Select Albums for {0}"
+msgstr ""
+
+msgctxt "#32827"
+msgid "Exclude Songs — Select Artist"
+msgstr ""
+
+msgctxt "#32828"
+msgid "Do you want to exclude specific songs from any included album?"
+msgstr ""
+
+msgctxt "#32829"
+msgid "Select songs to exclude from: {0}"
+msgstr ""
+
+msgctxt "#32830"
+msgid "{0} song(s) excluded — tap to change"
+msgstr ""
+
+msgctxt "#32831"
+msgid "Tap to select songs to exclude"
+msgstr ""
+
+msgctxt "#32833"
+msgid "Party Mode Channel"
+msgstr ""
+
+msgctxt "#32838"
+msgid "No artists found in music library."
+msgstr ""
+
+msgctxt "#32839"
+msgid "No artists selected."
+msgstr ""
+
+msgctxt "#32840"
+msgid "Tonight at {0}"
+msgstr ""
+
+msgctxt "#32841"
+msgid "Tomorrow at {0}"
+msgstr ""
+
+msgctxt "#32842"
+msgid "{0} at {1}"
+msgstr ""
+
+msgctxt "#32843"
+msgid "Special programming on"
+msgstr ""
+
+msgctxt "#32845"
+msgid "  Receives: {0}  ({1} items from {2} at {3})"
+msgstr ""
+
+msgctxt "#32846"
+msgid "  Feeds: {0}  ({1} items to {2} at {3})"
+msgstr ""
+
+msgctxt "#32847"
+msgid "  [inactive]"
+msgstr ""
+
+msgctxt "#32848"
+msgid "Building songs cache in background..."
+msgstr ""
+
+msgctxt "#32849"
+msgid "Refreshing songs cache in background..."
+msgstr ""
+
+msgctxt "#32850"
+msgid "Artist Rotation Order"
+msgstr ""
+
+msgctxt "#32851"
+msgid "Album Order for {0}"
+msgstr ""
+
+msgctxt "#32852"
+msgid "Choose artist for position {0}:"
+msgstr ""
+
+msgctxt "#32853"
+msgid "Choose album for position {0}:"
+msgstr ""
+
+msgctxt "#32854"
+msgid "Shuffle Albums"
+msgstr ""
+
+msgctxt "#32855"
+msgid "Random (no repeats — all songs play once)"
+msgstr ""
+
+msgctxt "#32856"
+msgid "Select All Albums"
+msgstr ""
+
+msgctxt "#32857"
+msgid "Music Source"
+msgstr ""
+
+msgctxt "#32858"
+msgid "Exclude Songs From Selected Artist"
+msgstr ""
+
+msgctxt "#32860"
+msgid "Side Panel error: {0}"
+msgstr ""
+
+msgctxt "#32861"
+msgid "Carousel mode"
+msgstr ""
+
+msgctxt "#32862"
+msgid "Timed"
+msgstr ""
+
+msgctxt "#32863"
+msgid "Duration"
+msgstr ""
+
+msgctxt "#32864"
+msgid "Carousel:  Duration mode — pops on item runtime"
+msgstr ""
+
+msgctxt "#32865"
+msgid "Carousel advances the queue automatically using each item's real duration as its pop window."
+msgstr ""
+
+msgctxt "#32866"
+msgid "Combo Block"
+msgstr ""
+
+msgctxt "#32867"
+msgid "Add Slot"
+msgstr ""
+
+msgctxt "#32868"
+msgid "A Combo Block requires at least one slot."
+msgstr ""
+
+msgctxt "#32869"
+msgid "Source type"
+msgstr ""
+
+msgctxt "#32870"
+msgid "How many complete blocks to insert each time?"
+msgstr ""
+
+msgctxt "#32871"
+msgid "Slots"
+msgstr ""
+
+msgctxt "#32872"
+msgid "Combo Block channels are not directly playable. Add to a channel via Manage Interleave or a Schedule."
+msgstr ""
+
+msgctxt "#32873"
+msgid "Edit Slot"
+msgstr ""
+
+msgctxt "#32874"
+msgid "Move Slot Up"
+msgstr ""
+
+msgctxt "#32875"
+msgid "Move Slot Down"
+msgstr ""
+
+msgctxt "#32876"
+msgid "Remove Slot"
+msgstr ""
+
+msgctxt "#32877"
+msgid "This Combo Block is used by '{0}'. Items already in that channel's queue will not change; your edits apply to items added from now on."
+msgstr ""
+
+msgctxt "#32879"
+msgid "'{0}' is used as a {1} source by '{2}'. Deleting it will break that relationship. Delete anyway?"
+msgstr ""
+
+msgctxt "#32880"
+msgid "'{0}' deleted. Removed from {1}'s {2}."
+msgstr ""
+
+msgctxt "#32881"
+msgid "Owner: {0} ({1})"
+msgstr ""
+
+msgctxt "#32882"
+msgid "Owner: None (available)"
+msgstr ""
+
+msgctxt "#32883"
+msgid "interleave source"
+msgstr ""
+
+msgctxt "#32884"
+msgid "schedule source"
+msgstr ""
+
+msgctxt "#32885"
+msgid "Silent"
+msgstr ""
+
+msgctxt "#32886"
+msgid "Not Silent"
+msgstr ""
+
+msgctxt "#32888"
+msgid "Combo Block (no slots configured)"
+msgstr ""
+
+msgctxt "#32889"
+msgid "Queue: {0} items ({1} complete units)"
+msgstr ""
+
+msgctxt "#32895"
+msgid "Remove Slot {0}?"
+msgstr ""
+
+msgctxt "#32896"
+msgid "Combo Blocks cannot be played directly. Use them as an interleave or schedule source in another channel."
+msgstr ""
+
+msgctxt "#32898"
+msgid "Manage Slots"
+msgstr ""
+
+msgctxt "#32899"
+msgid "Should this slot play silently in the background?"
+msgstr ""
+
+msgctxt "#32903"
+msgid "Slot {0}: {1}"
+msgstr ""
+
+msgctxt "#32904"
+msgid "ffprobe path (leave blank to search PATH)"
+msgstr ""
+
+msgctxt "#32905"
+msgid "Scan Folder for Durations"
+msgstr ""
+
+msgctxt "#32906"
+msgid "View Missing Durations Log"
+msgstr ""
+
+msgctxt "#32907"
+msgid "ffprobe scanning is only available on Windows."
+msgstr ""
+
+msgctxt "#32908"
+msgid "ffprobe not found. Install ffmpeg and set the path in Settings, or ensure ffprobe.exe is on your system PATH."
+msgstr ""
+
+msgctxt "#32909"
+msgid "Scanning: {0}"
+msgstr ""
+
+msgctxt "#32910"
+msgid "Scan complete. {0} files scanned, {1} NFOs written, {2} already had durations, {3} failed."
+msgstr ""
+
+msgctxt "#32911"
+msgid "Scan cancelled. {0} NFOs written before cancellation."
+msgstr ""
+
+msgctxt "#32912"
+msgid "Tools"
+msgstr ""
+
+msgctxt "#32913"
+msgid "'{0}' is used as a source by '{1}' and must stay hidden. Remove it as a source first."
+msgstr ""
+
+msgctxt "#32914"
+msgid "Interleave sources must be hidden channels. No hidden channels are available."
+msgstr ""
+
+msgctxt "#32915"
+msgid "'{0}' has Carousel enabled and cannot be hidden. Disable its Carousel first."
+msgstr ""
+
+msgctxt "#32916"
+msgid "Reset '{0}' so it starts from the beginning the next time it is used as a source?"
+msgstr ""
+
+msgctxt "#32917"
+msgid "Reset the removed source channels so they start from the beginning?"
+msgstr ""
+
+msgctxt "#32918"
+msgid "Top Left"
+msgstr ""
+
+msgctxt "#32919"
+msgid "Top Right"
+msgstr ""
+
+msgctxt "#32920"
+msgid "Bottom Left"
+msgstr ""
+
+msgctxt "#32921"
+msgid "Bottom Right"
+msgstr ""
+
+msgctxt "#32922"
+msgid "1 Minute"
+msgstr ""
+
+msgctxt "#32923"
+msgid "2 Minutes"
+msgstr ""
+
+msgctxt "#32924"
+msgid "3 Minutes"
+msgstr ""
+
+msgctxt "#32925"
+msgid "4 Minutes"
+msgstr ""
+
+msgctxt "#32926"
+msgid "5 Minutes"
+msgstr ""
+
+msgctxt "#32927"
+msgid "Small"
+msgstr ""
+
+msgctxt "#32928"
+msgid "Medium"
+msgstr ""
+
+msgctxt "#32929"
+msgid "Large"
+msgstr ""
+
+msgctxt "#32930"
+msgid "Low"
+msgstr ""
+
+msgctxt "#32931"
+msgid "High"
+msgstr ""
+
+msgctxt "#32932"
+msgid "A channel named '{0}' already exists. Please choose a different name."
+msgstr ""
+
+msgctxt "#32933"
+msgid "Cancel"
+msgstr ""
+
+msgctxt "#32934"
+msgid "Shuffle (no repeats — all songs play once)"
+msgstr ""
+
+msgctxt "#32935"
+msgid "Balance Artists"
+msgstr ""
+
+msgctxt "#32936"
+msgid "Give every artist equal turns? When an artist runs out of songs, only that artist starts over."
+msgstr ""
+
+msgctxt "#32937"
+msgid "Play albums in random order? Every album plays once before any album repeats."
+msgstr ""
+
+msgctxt "#32938"
+msgid "This folder is on a local drive ({0}). Other devices on your network, such as an Android box, cannot open it. Choose the folder through Network Locations (smb://Server/Share/...) so every device can play it. Keep it only if this channel is played on this device alone."
+msgstr ""
+
+msgctxt "#32939"
+msgid "Keep This Path"
+msgstr ""
+
+msgctxt "#32940"
+msgid "Choose Another"
+msgstr ""
+
+msgctxt "#32941"
+msgid "How should the shows in this slot share it?"
+msgstr ""
+
+msgctxt "#32942"
+msgid "Together: every show plays in every cycle"
+msgstr ""
+
+msgctxt "#32943"
+msgid "Taking turns: one show per cycle"
+msgstr ""
+
+msgctxt "#32944"
+msgid "Episodes per turn (current: {0}):"
+msgstr ""
+
+msgctxt "#32945"
+msgid "Taking turns: {0} episode(s) per turn"
+msgstr ""
+
+msgctxt "#32946"
+msgid "This channel is being played on {0}. You will get a notification when it is free."
+msgstr ""
+
+msgctxt "#32947"
+msgid "{0} is now available to watch."
+msgstr ""
+
+msgctxt "#32948"
+msgid "another device"
+msgstr ""
+
+msgctxt "#32949"
+msgid "This channel is being played on {0}, so it cannot be changed from here. You will get a notification when it is free."
+msgstr ""

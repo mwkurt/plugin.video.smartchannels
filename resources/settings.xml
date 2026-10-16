@@ -1,0 +1,369 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<settings version="1">
+  <section id="plugin.video.smartchannels">
+    <category id="channels" label="32001">
+      <group id="1">
+        <setting id="create_channel_action" type="action" label="32002">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=create_channel)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+        <setting id="auto_create_action" type="action" label="32003">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=auto_create_channels)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+        <setting id="open_channels_action" type="action" label="32004">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=open_channels)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+        <setting id="channel_icon_folder" type="path" label="32005">
+          <level>0</level>
+          <default></default>
+          <constraints>
+            <writable>false</writable>
+            <allowempty>true</allowempty>
+          </constraints>
+          <control type="button" format="path"><heading>32005</heading></control>
+        </setting>
+        <setting id="folder_default_duration" type="integer" label="32006">
+          <level>0</level>
+          <default>120</default>
+          <control type="edit" format="integer"><heading>32006</heading></control>
+        </setting>
+        <setting id="manage_schedules_action" type="action" label="32007">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=manage_schedules)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+        <setting id="sort_channels_alpha_action" type="action" label="32008">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=sort_channels_alpha)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+      </group>
+    </category>
+    <category id="playback" label="32013">
+      <group id="1">
+        <setting id="default_queue_size" type="integer" label="32014">
+          <level>0</level>
+          <default>30</default>
+          <control type="edit" format="integer"><heading>32014</heading></control>
+        </setting>
+        <setting id="default_randomize" type="boolean" label="32015">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="reset_watched" type="boolean" label="32016">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+      </group>
+    </category>
+    <category id="cache" label="32019">
+      <group id="1">
+        <setting id="cache_max_age_days" type="integer" label="32020">
+          <level>0</level>
+          <default>7</default>
+          <control type="edit" format="integer"><heading>32020</heading></control>
+        </setting>
+        <setting id="cache_auto_rebuild" type="boolean" label="32021">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="cache_age_display" type="integer" label="32022">
+          <level>0</level>
+          <default>0</default>
+          <enable>false</enable>
+          <control type="edit" format="integer"><heading>32022</heading></control>
+        </setting>
+        <setting id="refresh_library_action" type="action" label="32023">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=refresh_library)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+        <setting id="songs_cache_age_display" type="integer" label="32024">
+          <level>0</level>
+          <default>0</default>
+          <enable>false</enable>
+          <control type="edit" format="integer"><heading>32024</heading></control>
+        </setting>
+        <setting id="refresh_songs_cache_action" type="action" label="32025">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=refresh_songs_cache)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+        <setting id="repair_queue_paths_action" type="action" label="32026">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=repair_queue_paths)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+      </group>
+    </category>
+    <category id="network" label="32029">
+      <group id="1">
+        <setting id="shared_storage_path" type="path" label="32030">
+          <level>0</level>
+          <default></default>
+          <constraints>
+            <writable>true</writable>
+            <allowempty>true</allowempty>
+          </constraints>
+          <control type="button" format="path"><heading>32030</heading></control>
+        </setting>
+      </group>
+    </category>
+    <category id="resume" label="32035">
+      <group id="1">
+        <setting id="resume_on_stop" type="boolean" label="32036">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="resume_poll_interval" type="integer" label="32037">
+          <level>0</level>
+          <default>60</default>
+          <control type="edit" format="integer"><heading>32037</heading></control>
+        </setting>
+        <setting id="resume_ask_user" type="boolean" label="32038">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+      </group>
+    </category>
+    <category id="advanced" label="32043">
+      <group id="1">
+        <setting id="show_next_episode" type="boolean" label="32044">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="show_episode_count" type="boolean" label="32045">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="show_hidden_channels" type="boolean" label="32046">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="num_upcoming_programs" type="integer" label="32047">
+          <level>0</level>
+          <default>5</default>
+          <control type="edit" format="integer"><heading>32047</heading></control>
+        </setting>
+        <setting id="use_side_panel" type="boolean" label="32048">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="log_level" type="integer" label="32050">
+          <level>0</level>
+          <default>0</default>
+          <control type="edit" format="integer"><heading>32050</heading></control>
+        </setting>
+        <setting id="delete_all_data_action" type="action" label="32051">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=delete_all_data)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+      </group>
+    </category>
+    <category id="backup_restore" label="32056">
+      <group id="1">
+        <setting id="backup_path" type="path" label="32057">
+          <level>0</level>
+          <default></default>
+          <constraints>
+            <writable>true</writable>
+            <allowempty>true</allowempty>
+          </constraints>
+          <control type="button" format="path"><heading>32057</heading></control>
+        </setting>
+        <setting id="backup_data_action" type="action" label="32058">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=backup_data)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+        <setting id="restore_data_action" type="action" label="32059">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=restore_data)</data>
+          <control type="button" format="action"><close>true</close></control>
+        </setting>
+      </group>
+    </category>
+    <category id="coming_up_next" label="32064">
+      <group id="1">
+        <setting id="cun_enabled" type="boolean" label="32065">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="cun_corner" type="integer" label="32066">
+          <level>0</level>
+          <default>3</default>
+          <constraints>
+            <options>
+              <option label="32918">0</option>
+              <option label="32919">1</option>
+              <option label="32920">2</option>
+              <option label="32921">3</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string"/>
+        </setting>
+        <setting id="cun_lead" type="integer" label="32068">
+          <level>0</level>
+          <default>1</default>
+          <constraints>
+            <options>
+              <option label="32922">0</option>
+              <option label="32923">1</option>
+              <option label="32924">2</option>
+              <option label="32925">3</option>
+              <option label="32926">4</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string"/>
+        </setting>
+        <setting id="cun_duration" type="integer" label="32069">
+          <level>0</level>
+          <default>8</default>
+          <control type="edit" format="integer"><heading>32069</heading></control>
+        </setting>
+        <setting id="cun_show_title" type="boolean" label="32070">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="cun_show_season_ep" type="boolean" label="32071">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="cun_show_ep_title" type="boolean" label="32072">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="cun_min_duration" type="integer" label="32073">
+          <level>0</level>
+          <default>120</default>
+          <control type="edit" format="integer"><heading>32073</heading></control>
+        </setting>
+        <setting id="cun_suppress_silent" type="boolean" label="32074">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="cun_audio_enabled" type="boolean" label="32075">
+          <level>0</level>
+          <default>true</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="cun_audio_lead" type="integer" label="32076">
+          <level>0</level>
+          <default>20</default>
+          <control type="edit" format="integer"><heading>32076</heading></control>
+        </setting>
+        <setting id="cun_audio_duration" type="integer" label="32077">
+          <level>0</level>
+          <default>15</default>
+          <control type="edit" format="integer"><heading>32077</heading></control>
+        </setting>
+        <setting id="cun_audio_min_duration" type="integer" label="32078">
+          <level>0</level>
+          <default>60</default>
+          <control type="edit" format="integer"><heading>32078</heading></control>
+        </setting>
+      </group>
+    </category>
+    <category id="logo_overlay" label="32083">
+      <group id="1">
+        <setting id="logo_overlay_enabled" type="boolean" label="32084">
+          <level>0</level>
+          <default>false</default>
+          <control type="toggle"/>
+        </setting>
+        <setting id="logo_overlay_corner" type="integer" label="32085">
+          <level>0</level>
+          <default>1</default>
+          <constraints>
+            <options>
+              <option label="32918">0</option>
+              <option label="32919">1</option>
+              <option label="32920">2</option>
+              <option label="32921">3</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string"/>
+        </setting>
+        <setting id="logo_overlay_size" type="integer" label="32086">
+          <level>0</level>
+          <default>1</default>
+          <constraints>
+            <options>
+              <option label="32927">0</option>
+              <option label="32928">1</option>
+              <option label="32929">2</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string"/>
+        </setting>
+        <setting id="logo_overlay_opacity" type="integer" label="32088">
+          <level>0</level>
+          <default>1</default>
+          <constraints>
+            <options>
+              <option label="32930">0</option>
+              <option label="32928">1</option>
+              <option label="32931">2</option>
+            </options>
+          </constraints>
+          <control type="spinner" format="string"/>
+        </setting>
+        <setting id="logo_overlay_margin" type="integer" label="32090">
+          <level>0</level>
+          <default>30</default>
+          <control type="edit" format="integer"><heading>32090</heading></control>
+        </setting>
+        <setting id="logo_overlay_duration" type="integer" label="32091">
+          <level>0</level>
+          <default>5</default>
+          <control type="edit" format="integer"><heading>32091</heading></control>
+        </setting>
+      </group>
+    </category>
+    <category id="tools" label="32912">
+      <group id="1">
+        <setting id="ffprobe_path" type="string" label="32904">
+          <level>0</level>
+          <default></default>
+          <constraints>
+            <allowempty>true</allowempty>
+          </constraints>
+          <control type="edit" format="string"><heading>32904</heading></control>
+        </setting>
+        <setting id="ffprobe_scan_action" type="action" label="32905">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=ffprobe_scan)</data>
+          <dependencies>
+            <dependency type="visible"><condition on="property" name="InfoBool">system.platform.windows</condition></dependency>
+          </dependencies>
+          <control type="button" format="action"></control>
+        </setting>
+        <setting id="view_missing_durations_action" type="action" label="32906">
+          <level>0</level>
+          <data>RunPlugin(plugin://plugin.video.smartchannels/?action=view_missing_durations_global)</data>
+          <control type="button" format="action"></control>
+        </setting>
+      </group>
+    </category>
+  </section>
+</settings>
