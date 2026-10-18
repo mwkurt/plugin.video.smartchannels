@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import os
 import random
+import threading
 import time
 import uuid
 from typing import Any, Optional
@@ -32,9 +33,10 @@ import xbmcvfs
 
 from resources.lib.library      import LibraryClient
 from resources.lib.utils.logger import log
-from resources.lib.utils.paths  import (load_json, save_json, resolve_path,
-                                        shared_root, normalize_share_path,
-                                        path_join)
+from resources.lib.utils.paths  import (load_json, load_json_strict,
+                                        JsonReadError, save_json,
+                                        resolve_path, shared_root,
+                                        normalize_share_path, path_join)
 from resources.lib.channels.interleave import (
     plan_primary_count  as plan_interleave_primaries,
     tv_slot_takes_turns,
@@ -80,6 +82,17 @@ class ChannelManager:
     # per Kodi session (and again only if the path changes).
     _shared_logged = ""
 
+    # One read-merge-write of state.json at a time within this process
+    # (service threads and the carousel all save state).
+    _STATE_LOCK = threading.RLock()
+
+    # state.json snapshots: one is written at most every STATE_BACKUP_SECONDS,
+    # into one of STATE_BACKUP_SLOTS files used in turn, so the last
+    # SLOTS x SECONDS (24 hours) of good state stay on the share.
+    STATE_BACKUP_SECONDS = 10800
+    STATE_BACKUP_SLOTS   = 8
+    _state_backup_at     = 0.0
+
     def __init__(self, addon: xbmcaddon.Addon):
         self.addon   = addon
         self.profile = xbmcvfs.translatePath(addon.getAddonInfo("profile"))
@@ -99,8 +112,15 @@ class ChannelManager:
             log("[ChannelManager] LOCAL STORAGE: {}".format(self.profile),
                 xbmc.LOGDEBUG)
 
-        self._channels = self._load_json(self._channels_path, [])
-        self._state    = self._load_json(self._state_path,    {})
+        # A file that exists but cannot be read (another device is writing it,
+        # or the share dropped) is not the same as an empty file.  An
+        # unreadable channels.json or state.json is flagged and never written
+        # back.  While state.json is flagged, nothing is drawn from the
+        # cursor and no cursor is saved (_ensure_state).
+        self._channels, self._channels_ok = self._read_strict(
+            self._channels_path, [])
+        self._state,    self._state_ok    = self._read_strict(
+            self._state_path, {})
         log("[ChannelManager] Loaded {} channel(s)".format(len(self._channels)),
             xbmc.LOGDEBUG)
 
@@ -145,7 +165,41 @@ class ChannelManager:
     def _save_json(self, path: str, data: Any) -> None:
         save_json(path, data)
 
+    def _read_strict(self, path: str, default: Any) -> tuple:
+        """Return (data, True), or (default, False) if the file is unreadable."""
+        try:
+            return load_json_strict(path, default), True
+        except JsonReadError as exc:
+            log("[ChannelManager] cannot read {} - writes to it are held "
+                "back until it can be read".format(exc), level=xbmc.LOGWARNING)
+            return default, False
+
+    def _ensure_state(self) -> bool:
+        """True when the in-memory state is a real copy of state.json.
+
+        If state.json could not be read when this manager was created, the
+        in-memory state is an empty stand-in: a cursor taken from it is a
+        zero cursor, and saving that would replace the channel's real
+        positions.  Try to read it again; False means still unreadable and
+        callers must not draw from the cursor or save one.
+        """
+        if self._state_ok:
+            return True
+        data, ok = self._read_strict(self._state_path, {})
+        if ok:
+            self._state    = {**data, **self._state}
+            self._state_ok = True
+        return ok
+
     def _save_channels(self) -> None:
+        if not self._channels_ok:
+            # The list in memory started as an empty stand-in for a file that
+            # could not be read; writing it would erase every channel.
+            self._channels, self._channels_ok = self._read_strict(
+                self._channels_path, [])
+            log("[ChannelManager] channels.json was unreadable when loaded - "
+                "this change was not saved", level=xbmc.LOGWARNING)
+            return
         self._save_json(self._channels_path, self._channels)
 
     def _save_state(self) -> None:
@@ -154,41 +208,76 @@ class ChannelManager:
         Reads current file from disk, merges our in-memory changes on top,
         strips explicitly deleted keys, strips orphan keys (channels that no
         longer exist), then writes. Keeps in-memory copy consistent.
+
+        If state.json exists but cannot be read, nothing is written: the merge
+        would start from an empty file and erase every channel's position.
+        Orphan pruning is skipped unless channels.json was read and holds at
+        least one channel, for the same reason.
         """
-        try:
-            on_disk = self._load_json(self._state_path, {})
-            merged  = {**on_disk, **self._state}
-            for k in self._deleted_state_keys:
-                merged.pop(k, None)
-            # Orphan-key pruning: drop keys for deleted channels.
-            # Exemptions: keys starting with "resume:" or "combo:" are managed
-            # independently and must not be pruned here.
-            # Read live channel IDs directly from disk so channels created by
-            # other processes (e.g. addon.py) are not falsely treated as orphans
-            # by the long-running service process.
+        with ChannelManager._STATE_LOCK:
             try:
-                disk_channels = self._load_json(self._channels_path, [])
-                live_ids = {c["id"] for c in disk_channels}
-                # Keep in-memory channels in sync
-                self._channels = disk_channels
-            except Exception:
-                live_ids = {c["id"] for c in self._channels}
-            orphans  = [
-                k for k in list(merged.keys())
-                if ":" in k
-                and not k.startswith("resume:")
-                and not k.startswith("combo:")
-                and not k.startswith("pending_seek:")
-                and not k.startswith("sch_")   # schedule active_block keys
-                and k.split(":", 1)[0] not in live_ids
-            ]
-            for k in orphans:
-                del merged[k]
-            self._save_json(self._state_path, merged)
-            self._state = merged
-        except Exception as exc:
-            log("[ChannelManager] _save_state error: {}".format(exc),
-                level=xbmc.LOGWARNING)
+                try:
+                    on_disk = load_json_strict(self._state_path, {})
+                except JsonReadError as exc:
+                    log("[ChannelManager] _save_state skipped, state.json "
+                        "unreadable: {}".format(exc), level=xbmc.LOGWARNING)
+                    return
+                self._backup_state(on_disk)
+                merged  = {**on_disk, **self._state}
+                for k in self._deleted_state_keys:
+                    merged.pop(k, None)
+                # Orphan-key pruning: drop keys for deleted channels.
+                # Exemptions: keys starting with "resume:" or "combo:" are
+                # managed independently and must not be pruned here.
+                # Read live channel IDs directly from disk so channels created
+                # by other processes (e.g. addon.py) are not falsely treated
+                # as orphans by the long-running service process.
+                try:
+                    disk_channels = load_json_strict(self._channels_path, [])
+                except JsonReadError:
+                    disk_channels = []
+                if disk_channels:
+                    self._channels    = disk_channels
+                    self._channels_ok = True
+                    live_ids = {c["id"] for c in disk_channels}
+                    orphans  = [
+                        k for k in list(merged.keys())
+                        if ":" in k
+                        and not k.startswith("resume:")
+                        and not k.startswith("combo:")
+                        and not k.startswith("pending_seek:")
+                        and not k.startswith("sch_")   # schedule active_block
+                        and k.split(":", 1)[0] not in live_ids
+                    ]
+                    for k in orphans:
+                        del merged[k]
+                else:
+                    log("[ChannelManager] _save_state: channel list empty or "
+                        "unreadable - orphan pruning skipped",
+                        level=xbmc.LOGWARNING)
+                self._save_json(self._state_path, merged)
+                self._state = merged
+            except Exception as exc:
+                log("[ChannelManager] _save_state error: {}".format(exc),
+                    level=xbmc.LOGWARNING)
+
+    def _backup_state(self, good_state: dict) -> None:
+        """Keep a rolling snapshot of the last state.json that read cleanly.
+
+        Written at most once per STATE_BACKUP_SECONDS per process, into
+        state.bak<N>.json with N cycling through STATE_BACKUP_SLOTS, so an
+        earlier good copy survives a bad overwrite for about 24 hours.
+        An empty state is never snapshotted.
+        """
+        now = time.time()
+        if (not good_state
+                or now - ChannelManager._state_backup_at
+                < self.STATE_BACKUP_SECONDS):
+            return
+        ChannelManager._state_backup_at = now
+        slot = int(now // self.STATE_BACKUP_SECONDS) % self.STATE_BACKUP_SLOTS
+        self._save_json(self._resolve_path("state.bak{}.json".format(slot)),
+                        good_state)
 
     def _queue_file_path(self, channel_id: str) -> str:
         return self._resolve_path("queue_{}.json".format(channel_id))
@@ -206,6 +295,21 @@ class ChannelManager:
         Returns [] if the queue file does not exist or cannot be read.
         """
         return self._load_json(self._queue_file_path(channel_id), [])
+
+    def read_channel_queue(self, channel_id: str) -> Optional[list]:
+        """Return the queue list, [] if there is no queue file, or None if the
+        file exists but cannot be read (another device is writing it, or the
+        shared folder is not reachable).
+
+        Use this where an empty answer would start a new build: a queue that
+        is merely unreadable must not be replaced.
+        """
+        try:
+            return load_json_strict(self._queue_file_path(channel_id), [])
+        except JsonReadError as exc:
+            log("[ChannelManager] cannot read queue: {}".format(exc),
+                level=xbmc.LOGWARNING)
+            return None
 
     def write_channel_queue(self, channel_id: str, queue: list) -> None:
         """Write the queue list for any channel type."""
@@ -241,6 +345,11 @@ class ChannelManager:
 
     def set_cursor(self, channel_id: str, cursor: dict) -> None:
         """Write cursor to state for channel_id."""
+        if not self._ensure_state():
+            log("[ChannelManager] set_cursor: state.json unreadable - cursor "
+                "for '{}' not saved".format(channel_id),
+                level=xbmc.LOGWARNING)
+            return
         key = "{}:cursor".format(channel_id)
         self._deleted_state_keys.discard(key)
         self._state[key] = cursor
@@ -314,8 +423,14 @@ class ChannelManager:
         removed.  Serial replacement uses this to find the true tail of the
         queue without reading a potentially stale disk copy.
 
-        Returns None if the channel is exhausted (recycle=False, pool empty).
+        Returns None if the channel is exhausted (recycle=False, pool empty),
+        or if state.json cannot be read (the cursor is unknown, so nothing is
+        drawn).
         """
+        if not self._ensure_state():
+            log("[ChannelManager] get_one_replacement: state.json "
+                "unreadable - no replacement drawn", level=xbmc.LOGWARNING)
+            return None
         # Interleaved items must be replaced from their source channel, not the
         # host channel.  Without this, a movie interleaved into a TV channel
         # would be replaced with a TV episode (wrong source, wrong type).
@@ -391,6 +506,10 @@ class ChannelManager:
         Does NOT advance show_slot — only the per-show ep_pos advances.
         spec §8.5, §9.2
         """
+        if not self._ensure_state():
+            log("[ChannelManager] get_carousel_replacement: state.json "
+                "unreadable - no replacement drawn", level=xbmc.LOGWARNING)
+            return None
         channel = self.get_channel(channel_id)
         if not channel:
             return None
@@ -855,7 +974,16 @@ class ChannelManager:
         Writes the cursor and returns the queue list (caller writes to disk).
 
         spec §7.2
+
+        Returns [] without building when state.json cannot be read: a build
+        writes the cursor, which must not happen from an empty stand-in.
         """
+        if not self._ensure_state():
+            log("[ChannelManager] build_channel_queue: state.json "
+                "unreadable - '{}' not built".format(
+                    channel.get("name", channel.get("id", "?"))),
+                level=xbmc.LOGWARNING)
+            return []
         channel_id  = channel["id"]
         target_size = int(channel.get("queue_size",
                                       self._default_queue_size()))
@@ -1474,8 +1602,7 @@ class ChannelManager:
         # 1. Per-channel state list
         state_key = "{}:missing_durations".format(channel_id)
         try:
-            state    = self._load_json(self._state_path, {})
-            existing = state.get(state_key, [])
+            existing = list(self.read_state_key(state_key, []))
             known    = {e.get("file", "") for e in existing}
             if file_path not in known:
                 existing.append({
@@ -1488,8 +1615,7 @@ class ChannelManager:
                 })
                 if len(existing) > 200:
                     existing = existing[-200:]
-                state[state_key] = existing
-                self._save_json(self._state_path, state)
+                self.write_state_key(state_key, existing)
         except Exception as exc:
             log("[ChannelManager] record_missing_duration state error: "
                 "{}".format(exc))
@@ -1759,7 +1885,8 @@ class ChannelManager:
             if ch.get("id") != exclude_id)
 
     def reload_channels(self) -> None:
-        self._channels = self._load_json(self._channels_path, [])
+        self._channels, self._channels_ok = self._read_strict(
+            self._channels_path, [])
 
     def create_channel(self, definition: dict) -> ChannelDef:
         """Create a new channel and persist to channels.json.
@@ -2190,14 +2317,7 @@ class ChannelManager:
         if schedule_id in schedules:
             del schedules[schedule_id]
             self._save_json(self._schedules_path, schedules)
-        block_key = "{}:active_block".format(schedule_id)
-        try:
-            state = self._load_json(self._state_path, {})
-            if block_key in state:
-                del state[block_key]
-                self._save_json(self._state_path, state)
-        except Exception:
-            pass
+        self.clear_active_block(schedule_id)
 
     def save_schedules_data(self, schedules: dict) -> None:
         self._save_json(self._schedules_path, schedules)
@@ -2207,17 +2327,15 @@ class ChannelManager:
         return self._load_json(self._state_path, {}).get(key)
 
     def set_active_block(self, schedule_id: str, block: dict) -> None:
-        key   = "{}:active_block".format(schedule_id)
-        state = self._load_json(self._state_path, {})
-        state[key] = block
-        self._save_json(self._state_path, state)
+        self.write_state_key("{}:active_block".format(schedule_id), block)
 
     def clear_active_block(self, schedule_id: str) -> None:
-        key   = "{}:active_block".format(schedule_id)
-        state = self._load_json(self._state_path, {})
-        if key in state:
-            del state[key]
-            self._save_json(self._state_path, state)
+        key = "{}:active_block".format(schedule_id)
+        if self.read_state_key(key) is None and key not in self._state:
+            return
+        self._state.pop(key, None)
+        self._deleted_state_keys.add(key)
+        self._save_state()
 
     # =========================================================================
     # Combo Block public API  (spec §11)

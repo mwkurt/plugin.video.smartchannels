@@ -353,6 +353,7 @@ Smart TV Channels reads each episode's running time from its `.nfo` file (`durat
 
 - **Backup Addon Data** (Settings > Backup & Restore) copies your data into one backup file in the backup folder you set. The backup folder can be a network path.
 - **Restore Addon Data** lists the backups it finds. Choose one, choose which files to restore, confirm the overwrite, and restart Kodi when asked.
+- The add-on also keeps rolling copies of your channel positions on the shared folder (`state.bak0.json` to `state.bak7.json`, one every 3 hours, about 24 hours in all). If positions are ever lost, close Kodi on every device and copy the newest good copy over `state.json`.
 
 Take a backup before you use Delete All Addon Data, Restore, or change the shared path.
 

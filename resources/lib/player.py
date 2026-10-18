@@ -57,7 +57,18 @@ class SmartPlayer:
         # Reuse existing queue if present — it is already up to date via
         # 1-for-1 replacement in service.py.  Only build fresh when the queue
         # file does not exist yet (first play, channel reset, or post-edit).
-        queue = self.manager.get_channel_queue(channel_id)
+        queue = self.manager.read_channel_queue(channel_id)
+        if queue is None:
+            # The queue file exists but could not be read (another device is
+            # writing it, or the shared folder dropped).  Building a new queue
+            # here would replace the real one.
+            log("[player] start_channel: queue unreadable — not starting, "
+                "not rebuilding", xbmc.LOGWARNING)
+            xbmcgui.Dialog().notification(
+                self.addon.getLocalizedString(32000),
+                self.addon.getLocalizedString(32950),
+                xbmcgui.NOTIFICATION_WARNING, 4000)
+            return False
         if queue:
             log("[player] start_channel: reusing existing queue "
                 "({} items)".format(len(queue)))

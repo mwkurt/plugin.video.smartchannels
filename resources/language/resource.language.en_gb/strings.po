@@ -2317,3 +2317,7 @@ msgstr ""
 msgctxt "#32949"
 msgid "This channel is being played on {0}, so it cannot be changed from here. You will get a notification when it is free."
 msgstr ""
+
+msgctxt "#32950"
+msgid "The channel's queue could not be read from the shared folder. Try again in a moment."
+msgstr ""

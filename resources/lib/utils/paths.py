@@ -1,6 +1,7 @@
 # utils/paths.py
 #
-# OWNS:   resolve_path(), load_json(), save_json(), shared_root(),
+# OWNS:   resolve_path(), load_json(), load_json_strict(), JsonReadError,
+#         save_json(), shared_root(),
 #         normalize_share_path(), clean_path_setting(), smb_to_unc(),
 #         path_join(), and the _s() string helper.
 #         These are the ONLY implementations of these functions in the
@@ -131,19 +132,73 @@ def resolve_path(filename: str) -> str:
     return os.path.join(profile, filename)
 
 
-def load_json(path: str, default):
+class JsonReadError(Exception):
+    """A JSON file that should be readable could not be read or parsed."""
+
+
+_READ_ATTEMPTS = 3
+_READ_RETRY_MS = (150, 400)    # pause before the 2nd and 3rd attempt
+
+
+def _parent_reachable(path: str) -> bool:
+    """
+    Return True when the folder holding *path* can be reached.
+
+    A network share that is down makes xbmcvfs.exists() answer False for a
+    file that is really there, which looks the same as a file that was never
+    written.  The same applies to a mapped drive that has gone offline.
+    """
+    if "://" in path:
+        parent = path.rsplit("/", 1)[0]
+    else:
+        parent = os.path.dirname(path)
+    return _dir_exists(parent) if parent else True
+
+
+def load_json_strict(path: str, default):
     """
     Read and parse a JSON file from *path*.
-    Returns *default* if the file does not exist or cannot be parsed.
+
+    Returns *default* only when the file does not exist (and its folder can
+    be reached).  A file that exists but cannot be read or parsed, or a
+    folder that cannot be reached, raises JsonReadError.  A read that
+    returns nothing or half a file - another device is overwriting it at
+    that moment - is retried before giving up.
+
+    Use this wherever the result is written back, so that a failed read is
+    never mistaken for an empty file.
     """
-    if xbmcvfs.exists(path):
+    last_error = "not readable"
+    for attempt in range(_READ_ATTEMPTS):
+        if attempt:
+            xbmc.sleep(_READ_RETRY_MS[attempt - 1])
+        if not xbmcvfs.exists(path):
+            if _parent_reachable(path):
+                return default
+            last_error = "folder not reachable"
+            continue
         try:
             with xbmcvfs.File(path, "r") as f:
                 return json.loads(f.read())
         except Exception as exc:
-            xbmc.log("[{}][paths] load_json failed {}: {}".format(
-                _ADDON_ID, path, exc), xbmc.LOGWARNING)
-    return default
+            last_error = str(exc)
+    raise JsonReadError("{}: {}".format(path, last_error))
+
+
+def load_json(path: str, default):
+    """
+    Read and parse a JSON file from *path*.
+    Returns *default* if the file does not exist or cannot be parsed.
+
+    For data that is read and then written back, use load_json_strict
+    instead: this function cannot tell a missing file from a failed read.
+    """
+    try:
+        return load_json_strict(path, default)
+    except JsonReadError as exc:
+        xbmc.log("[{}][paths] load_json failed {}".format(
+            _ADDON_ID, exc), xbmc.LOGWARNING)
+        return default
 
 
 _WRITE_ATTEMPTS = 3
