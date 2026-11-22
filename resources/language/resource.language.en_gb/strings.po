@@ -160,7 +160,7 @@ msgid "Use Side Panel"
 msgstr ""
 
 msgctxt "#32050"
-msgid "Log Level (0=Info 1=Debug 2=Warning)"
+msgid "Log level"
 msgstr ""
 
 msgctxt "#32051"
@@ -676,7 +676,7 @@ msgid "Restore Complete"
 msgstr ""
 
 msgctxt "#32384"
-msgid "This will permanently delete all channels, state, queues and library cache from both the local and shared folder. Are you sure?"
+msgid "This will permanently delete all channels, schedules, state, saved copies of the state, queues and library caches from both the local and shared folder. Are you sure?"
 msgstr ""
 
 msgctxt "#32385"
@@ -1531,7 +1531,7 @@ msgid "Library not ready"
 msgstr ""
 
 msgctxt "#32676"
-msgid "The library cache has not been built yet. Please use Refresh Library Cache from the main screen first."
+msgid "The library cache has not been built yet. Open Settings, go to Cache and choose Refresh Library Cache first."
 msgstr ""
 
 msgctxt "#32677"
@@ -1618,6 +1618,10 @@ msgstr ""
 
 msgctxt "#32715"
 msgid "No missing durations have been recorded."
+msgstr ""
+
+msgctxt "#32716"
+msgid "default length used"
 msgstr ""
 
 
@@ -2320,4 +2324,200 @@ msgstr ""
 
 msgctxt "#32950"
 msgid "The channel's queue could not be read from the shared folder. Try again in a moment."
+msgstr ""
+
+msgctxt "#32951"
+msgid "\"{0}\" was changed, but its queue was not rebuilt because the channel positions could not be saved to the shared folder. The old queue and positions were kept. Open Edit Channel and save again in a moment."
+msgstr ""
+
+msgctxt "#32952"
+msgid "\"{0}\" was not changed because its queue could not be read from the shared folder. Nothing was saved. Open Edit Channel and try again in a moment."
+msgstr ""
+
+msgctxt "#32953"
+msgid "Single File"
+msgstr ""
+
+msgctxt "#32954"
+msgid "Select Media File"
+msgstr ""
+
+msgctxt "#32955"
+msgid "File not found: {0}"
+msgstr ""
+
+msgctxt "#32956"
+msgid "This file is on a local drive ({0}). Other devices on your network, such as an Android box, cannot open it. Choose the file through Network Locations (smb://Server/Share/...) so every device can play it. Keep it only if this channel is played on this device alone."
+msgstr ""
+
+msgctxt "#32957"
+msgid "Default TV Episode Length (minutes, 0 = skip episodes with no length)"
+msgstr ""
+
+msgctxt "#32958"
+msgid "Default Movie Length (minutes, 0 = skip movies with no length)"
+msgstr ""
+
+msgctxt "#32959"
+msgid "Part of the studio name (for example: Universal)"
+msgstr ""
+
+msgctxt "#32960"
+msgid "Keep a draw journal (records every episode pop and draw, to diagnose problems)"
+msgstr ""
+
+msgctxt "#32961"
+msgid "Shows Outside the Filter"
+msgstr ""
+
+msgctxt "#32962"
+msgid "Also add shows that do not match the filter?"
+msgstr ""
+
+msgctxt "#32963"
+msgid "Select Extra Shows ({0} available)"
+msgstr ""
+
+msgctxt "#32964"
+msgid "Movies Outside the Filters"
+msgstr ""
+
+msgctxt "#32965"
+msgid "Also add movies that do not match the filters?"
+msgstr ""
+
+msgctxt "#32966"
+msgid "Select Extra Movies ({0} available)"
+msgstr ""
+
+msgctxt "#32967"
+msgid "No, keep as is"
+msgstr ""
+
+msgctxt "#32968"
+msgid "Yes, add more"
+msgstr ""
+
+msgctxt "#32969"
+msgid "Remove scheduled blocks when their time slot ends"
+msgstr ""
+
+msgctxt "#32970"
+msgid "Update the library automatically every day"
+msgstr ""
+
+msgctxt "#32971"
+msgid "Daily library update time (HH:MM)"
+msgstr ""
+
+msgctxt "#32972"
+msgid "Episodes Per Show"
+msgstr ""
+
+msgctxt "#32973"
+msgid "Keep the current numbers"
+msgstr ""
+
+msgctxt "#32974"
+msgid "Change them for every show"
+msgstr ""
+
+msgctxt "#32975"
+msgid "Set only the new shows"
+msgstr ""
+
+msgctxt "#32976"
+msgid "Rebuild Queue, Keep Places"
+msgstr ""
+
+msgctxt "#32977"
+msgid "Rebuild \"{0}\" now? Everything woven into it (for example an edited Combo Block) is brought up to date. Every show keeps its place and nothing is reset."
+msgstr ""
+
+msgctxt "#32978"
+msgid "\"{0}\" rebuilt; every show kept its place."
+msgstr ""
+
+msgctxt "#32979"
+msgid "\"{0}\" could not be rebuilt now (its queue cannot be read). Nothing was changed."
+msgstr ""
+
+msgctxt "#32980"
+msgid "This device is the timing master (the one device that pops the carousel)"
+msgstr ""
+
+msgctxt "#32981"
+msgid "Turn this on for ONE device that runs Kodi all day. While it is running, the other devices only keep the clock of the channel they play and do not pop episodes. If it stops for five minutes, the others take over again. Restart Kodi after changing it."
+msgstr ""
+
+msgctxt "#32982"
+msgid "Lock the shared folder while saving"
+msgstr ""
+
+msgctxt "#32983"
+msgid "When devices share a folder, a device takes a lock (one small file, mutex.dat, in that folder) while it saves, so two devices cannot overwrite each other's changes. If the lock is busy for two seconds, the device saves anyway. Leave this on."
+msgstr ""
+
+msgctxt "#32984"
+msgid "Channels:"
+msgstr ""
+
+msgctxt "#32985"
+msgid "Next: {0}"
+msgstr ""
+
+msgctxt "#32986"
+msgid "{0} in queue"
+msgstr ""
+
+msgctxt "#32987"
+msgid "S{0}E{1}"
+msgstr ""
+
+msgctxt "#32988"
+msgid "Channel list opens on"
+msgstr ""
+
+msgctxt "#32989"
+msgid "First channel"
+msgstr ""
+
+msgctxt "#32990"
+msgid "Last channel played"
+msgstr ""
+
+msgctxt "#32991"
+msgid "A specific channel"
+msgstr ""
+
+msgctxt "#32992"
+msgid "Choose the channel to open on"
+msgstr ""
+
+msgctxt "#32993"
+msgid "Specific channel"
+msgstr ""
+
+msgctxt "#32994"
+msgid "The channel list will open on {0}"
+msgstr ""
+
+msgctxt "#32995"
+msgid "Open the channel list on"
+msgstr ""
+
+msgctxt "#32996"
+msgid "There are no channels to choose from."
+msgstr ""
+
+msgctxt "#32997"
+msgid "Warning (warnings and errors only)"
+msgstr ""
+
+msgctxt "#32998"
+msgid "Info (normal)"
+msgstr ""
+
+msgctxt "#32999"
+msgid "Debug (everything)"
 msgstr ""

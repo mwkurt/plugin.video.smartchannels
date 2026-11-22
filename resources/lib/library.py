@@ -29,6 +29,10 @@ from resources.lib.utils.paths import normalize_share_path
 # every LibraryClient to drop its in-memory lists on its next lookup.
 _CACHE_GEN_PROP = "smartchannels.library_cache_gen"
 
+# local_library.json modified time last seen by refresh_if_cache_changed(),
+# per path.  Module level so it survives the per-tick LibraryClient objects.
+_SEEN_CACHE_MTIME: dict = {}
+
 
 # -- Filter rule helpers -----------------------------------------------------
 # A filter rule is {"type", "value", "operator", "comparison"}.  "operator"
@@ -510,6 +514,32 @@ class LibraryClient:
                 xbmc.LOGWARNING)
             return False
 
+    def refresh_if_cache_changed(self) -> bool:
+        """Drop the in-memory library lists when local_library.json was
+        rewritten (by the daily upkeep on another device, or by a rebuild).
+        The first call only records the file's time (kept at module level, so
+        it works with a new LibraryClient on every call).  Returns True when
+        the lists were dropped.  Called about once a minute from service.py.
+        """
+        import xbmcvfs as _xbmcvfs
+        try:
+            if not _xbmcvfs.exists(self._local_cache_path):
+                return False
+            mtime = _xbmcvfs.Stat(self._local_cache_path).st_mtime()
+        except Exception:
+            return False
+        # The service builds a fresh ChannelManager (and so a fresh
+        # LibraryClient) for every tick, so the time last seen is kept in the
+        # module, keyed by file path, and not on this object.  (3.1.157)
+        seen = _SEEN_CACHE_MTIME.get(self._local_cache_path)
+        _SEEN_CACHE_MTIME[self._local_cache_path] = mtime
+        if seen is None or mtime == seen:
+            return False
+        log("[LibraryClient] local_library.json changed - library lists "
+            "reloaded")
+        self.invalidate_cache()
+        return True
+
     def build_local_cache(self, progress_callback=None):
         """
         Query MySQL for all shows and movies and write local_library.json.
@@ -728,7 +758,7 @@ class LibraryClient:
                 # Minimal properties for queue building - reduces transfer size
                 # and speeds up queries significantly on large libraries
                 "properties": ["title", "season", "episode", "file",
-                               "playcount", "showtitle"],
+                               "playcount", "showtitle", "runtime"],
                 "sort": {"order": "ascending", "method": "episode"},
             })
             episodes = result.get("episodes", [])

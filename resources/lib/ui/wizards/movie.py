@@ -9,8 +9,30 @@ from __future__ import annotations
 import xbmcgui
 
 from resources.lib.ui.dialogs import (
-    build_filters, build_movie_exclusions,
+    add_extra_movies, build_filters, build_movie_exclusions,
     ask_queue_size, ask_visibility, ask_carousel)
+
+
+def _movies_on_channel(manager, existing: dict | None) -> set:
+    """Ids of the movies an existing channel really plays.
+
+    A channel built with filters keeps the whole library in its movie list
+    and applies the filters when the queue is built, so only the movies that
+    match the filters (and the ones added by hand) are on the channel.  A
+    channel without filters plays its list as it is.
+    """
+    if not existing:
+        return set()
+    listed = existing.get("movies", [])
+    ids = {m["movieid"] for m in listed}
+    filters = existing.get("filters", [])
+    if filters:
+        matched = {m["movieid"]
+                   for m in manager.library.get_movies_with_filters(filters)}
+        added   = {m["movieid"] for m in listed if m.get("pinned")}
+        ids = (ids & matched) | (ids & added)
+        ids -= set(existing.get("excluded_movies", []))
+    return ids
 
 
 def run(addon, manager, name: str, existing: dict | None) -> dict | None:
@@ -34,8 +56,7 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
     pick_specific = (filter_choice == 1)
 
     if pick_specific:
-        existing_ids = {m["movieid"] for m in existing.get("movies", [])} \
-                       if existing else set()
+        existing_ids = _movies_on_channel(manager, existing)
         movie_labels = [m.get("title", str(m["movieid"])) for m in all_movies]
         preselected  = [i for i, m in enumerate(all_movies)
                         if m["movieid"] in existing_ids]
@@ -76,6 +97,13 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
                      addon.getLocalizedString(32521).format(len(matched)))
         else:
             filters = existing_filters
+
+    # ---- Extra movies outside the filters (all-movies path only) -------------
+    if not pick_specific and filters:
+        selected_movies = add_extra_movies(
+            addon, manager, d, existing, all_movies, filters, selected_movies)
+        if selected_movies is None:
+            return None
 
     # ---- Movie exclusions (all-movies path only) -----------------------------
     excluded_movies = existing.get("excluded_movies", []) if existing else []

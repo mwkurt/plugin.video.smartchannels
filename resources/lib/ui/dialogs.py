@@ -57,6 +57,44 @@ def browse_folder_path(addon, default_path: str = "") -> str:
         default_path = path
 
 
+def browse_media_file(addon, default_path: str = "") -> str:
+    """Let the user pick one media file; return the path, or "" if cancelled.
+
+    Same rule as browse_folder_path: a drive-letter path exists only on the
+    device that has the drive, so the user is told and may keep it or
+    choose another file.
+    """
+    d = xbmcgui.Dialog()
+    while True:
+        path = d.browseSingle(
+            1, addon.getLocalizedString(32954), "files",
+            defaultt=default_path)
+        if not path:
+            return ""
+        if not is_local_drive_path(path):
+            return path
+        keep = d.yesno(
+            addon.getLocalizedString(32000),
+            addon.getLocalizedString(32956).format(path),
+            nolabel=addon.getLocalizedString(32940),    # Choose Another
+            yeslabel=addon.getLocalizedString(32939))   # Keep This Path
+        if keep:
+            return path
+        default_path = path
+
+
+# ---------------------------------------------------------------------------
+# Show order listing
+# ---------------------------------------------------------------------------
+
+def show_order_listing(d, heading: str, shows: list) -> None:
+    """Show the shows in their current order as a numbered, scrolling list
+    (all of them, however many).  Used by the TV, Serial and Combo Block
+    wizards when a shuffled or manual order is confirmed."""
+    d.textviewer(heading, "\n".join(
+        "{}. {}".format(i + 1, s["title"]) for i, s in enumerate(shows)))
+
+
 # ---------------------------------------------------------------------------
 # List order picker
 # ---------------------------------------------------------------------------
@@ -594,6 +632,18 @@ def _add_filter_rule(addon, manager, d, ftype: str, operator: str,
                 "operator": operator, "comparison": comparison}
 
     elif ftype == "studio":
+        comparison = _ask_text_comparison(addon, d)
+        if comparison is None:
+            return None
+        if comparison in ("contains", "doesnotcontain"):
+            # Typed text: "Universal" matches every studio with that word,
+            # so the user does not have to pick each one from the list.
+            typed = d.input(addon.getLocalizedString(32959),
+                            type=xbmcgui.INPUT_ALPHANUM).strip()
+            if not typed:
+                return None
+            return {"type": "studio", "value": typed,
+                    "operator": operator, "comparison": comparison}
         try:
             studios = manager.library.get_studios(
                 "movie" if media_type == "movies" else "tv")
@@ -602,9 +652,6 @@ def _add_filter_rule(addon, manager, d, ftype: str, operator: str,
         if not studios:
             d.ok(addon.getLocalizedString(32000),
                  addon.getLocalizedString(32505))
-            return None
-        comparison = _ask_text_comparison(addon, d)
-        if comparison is None:
             return None
         choice = d.select(addon.getLocalizedString(32506), studios)
         if choice < 0:
@@ -973,3 +1020,102 @@ def ask_carousel(addon, manager, channel_id: str | None,
          addon.getLocalizedString(32602))
     return {"enabled": True, "mode": "duration",
             "interval": 60, "pop_count": 1}
+
+
+# ---------------------------------------------------------------------------
+# Shared by the TV channel, Movie channel and Combo Block slot wizards
+# ---------------------------------------------------------------------------
+
+def ask_keep_change_episodes(addon, d, selected_shows: list,
+                             existing_shows: list):
+    """Episodes-per-show choice when editing shows that already have counts.
+
+    Asks Keep / Change for every show / (only when shows were added in this
+    edit) Set only the new shows, so an edit that needs no change does not
+    need an Enter for every show.  Shows added in this edit start at 1.
+
+    Returns (mode, ask_for): mode is "keep" (also when the dialog is
+    cancelled), "all" or "new"; ask_for is the shows to put a number box
+    to ("all": every selected show, "new": the added ones, "keep": []).
+    """
+    prev_ids  = {s["tvshowid"] for s in existing_shows}
+    new_shows = [s for s in selected_shows if s["tvshowid"] not in prev_ids]
+    labels = [addon.getLocalizedString(32973),   # Keep the current numbers
+              addon.getLocalizedString(32974)]   # Change them for every show
+    if new_shows:
+        labels.append(addon.getLocalizedString(32975))  # Set only the new shows
+    choice = d.select(addon.getLocalizedString(32972), labels, preselect=0)
+    if choice == 1:
+        return "all", list(selected_shows)
+    if choice == 2 and new_shows:
+        return "new", new_shows
+    return "keep", []
+
+
+def ask_extra_shows(addon, d, all_shows: list, listed_shows: list):
+    """Let the user add shows that a filter does not match.
+
+    all_shows is the whole library, listed_shows the (filtered) list the user
+    just picked from.  Returns the extra shows as {tvshowid, title} dicts
+    ([] when there are none or the question is declined), or None when the
+    list was cancelled.
+    """
+    listed_ids = {s["tvshowid"] for s in listed_shows}
+    others     = [s for s in all_shows if s["tvshowid"] not in listed_ids]
+    if not others or not d.yesno(
+            addon.getLocalizedString(32961),
+            addon.getLocalizedString(32962),
+            nolabel=addon.getLocalizedString(32967),
+            yeslabel=addon.getLocalizedString(32968)):
+        return []
+    extra = d.multiselect(
+        addon.getLocalizedString(32963).format(len(others)),
+        [s["title"] for s in others])
+    if extra is None:
+        return None
+    return [{"tvshowid": others[i]["tvshowid"], "title": others[i]["title"]}
+            for i in extra]
+
+
+def add_extra_movies(addon, manager, d, existing, all_movies, filters,
+                     selected_movies):
+    """Let the user add movies that the filters do not match.
+
+    Returns the movie list with those movies flagged "pinned" (the queue
+    builders do not filter them out), or None when the dialog was
+    cancelled.  Extras already on the channel are ticked and are asked about
+    again without a yes/no, so they can be removed here.
+    """
+    matched_ids = {m["movieid"]
+                   for m in manager.library.get_movies_with_filters(filters)}
+    others = [m for m in all_movies if m["movieid"] not in matched_ids]
+    if not others:
+        return selected_movies
+    had = {m["movieid"] for m in existing.get("movies", []) if m.get("pinned")} \
+        if existing else set()
+    had &= {m["movieid"] for m in others}
+    if not had and not d.yesno(
+            addon.getLocalizedString(32964),
+            addon.getLocalizedString(32965),
+            nolabel=addon.getLocalizedString(32967),
+            yeslabel=addon.getLocalizedString(32968)):
+        return selected_movies
+    labels = [m.get("title", str(m["movieid"])) for m in others]
+    chosen = d.multiselect(
+        addon.getLocalizedString(32966).format(len(others)),
+        labels,
+        preselect=[i for i, m in enumerate(others) if m["movieid"] in had])
+    if chosen is None:
+        return None
+    pinned = {others[i]["movieid"] for i in chosen}
+    return [dict(m, pinned=True) if m["movieid"] in pinned else m
+            for m in selected_movies]
+
+
+def keep_existing_show_order(shows: list, existing_shows: list) -> list:
+    """Order *shows* like the shows already on the channel or slot: the ones
+    that were there keep their order, the ones added now follow in the order
+    given.  Returns a new list."""
+    position = {s["tvshowid"]: n for n, s in enumerate(existing_shows)}
+    after = len(existing_shows)
+    return sorted(shows, key=lambda s: position.get(s["tvshowid"], after))

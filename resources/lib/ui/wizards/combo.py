@@ -9,10 +9,13 @@ from __future__ import annotations
 import uuid
 
 import xbmcgui
+import xbmcvfs
 
 from resources.lib.ui.dialogs import (
     build_filters, build_episode_exclusions, build_movie_exclusions,
-    browse_folder_path)
+    browse_folder_path, browse_media_file, show_order_listing,
+    ask_extra_shows, ask_keep_change_episodes, add_extra_movies,
+    keep_existing_show_order)
 from resources.lib.channels.folder import _normalise_path
 from resources.lib.channels.interleave import (
     TV_MODE_TURNS, tv_slot_takes_turns, tv_turn_size)
@@ -46,7 +49,8 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
             elif src == "movies":
                 title = addon.getLocalizedString(32441)
             else:
-                fp    = sl.get("folder_path", "")
+                fp    = sl.get("file_path" if src == "file"
+                               else "folder_path", "")
                 title = (fp.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
                          if fp else "?")
             menu_items.append("[{}] {}".format(src.upper(), title))
@@ -165,11 +169,12 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
     import random as _random
     ex = existing_slot or {}
 
-    src_types  = ["tv", "movies", "folder"]
+    src_types  = ["tv", "movies", "folder", "file"]
     src_labels = [
         addon.getLocalizedString(32440),   # TV Shows
         addon.getLocalizedString(32441),   # Movies
         addon.getLocalizedString(32531),   # Folder
+        addon.getLocalizedString(32953),   # Single File
     ]
     src_choice = d.select(addon.getLocalizedString(32869), src_labels)
     if src_choice < 0:
@@ -185,6 +190,7 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
             d.ok(addon.getLocalizedString(32000),
                  addon.getLocalizedString(32212))
             return None
+        all_shows = list(show_pool)        # whole library, before any filter
 
         # Genre/year filter — only offered on large libraries
         if len(show_pool) > 20:
@@ -215,6 +221,15 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
         existing_shows_list = existing_shows_list or []
         ex_show_ids  = {s["tvshowid"] for s in existing_shows_list}
         ex_show_map  = {s["tvshowid"]: s for s in existing_shows_list}
+
+        # Shows already on the slot stay in the list when a filter does not
+        # match them (3.1.152), so editing a slot never drops them.
+        pool_ids = {s["tvshowid"] for s in show_pool}
+        if any(i not in pool_ids for i in ex_show_ids):
+            show_pool = [s for s in all_shows
+                         if s["tvshowid"] in pool_ids
+                         or s["tvshowid"] in ex_show_ids]
+        filter_narrowed = len(show_pool) < len(all_shows)
         preselected  = [i for i, s in enumerate(show_pool)
                         if s["tvshowid"] in ex_show_ids]
 
@@ -229,17 +244,31 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
                  addon.getLocalizedString(32210))
             return None
 
+        picked = [{"tvshowid": show_pool[i]["tvshowid"],
+                   "title":    show_pool[i]["title"]} for i in chosen_idxs]
+
+        # Extra shows outside the filter (3.1.152)
+        if filter_narrowed:
+            extra = ask_extra_shows(addon, d, all_shows, show_pool)
+            if extra is None:
+                return None
+            picked += extra
+        # Editing keeps the order the shows already had (3.1.154); shows
+        # added now follow.
+        picked = keep_existing_show_order(picked, existing_shows_list)
+
         selected_shows = []
-        for idx in chosen_idxs:
-            sp       = show_pool[idx]
+        for sp in picked:
             show_id  = sp["tvshowid"]
             prev     = ex_show_map.get(show_id, {})
             show_cfg = {
                 "tvshowid":          show_id,
                 "title":             sp["title"],
-                "episode_filters":   [],
+                "episode_filters":   prev.get("episode_filters", []),
                 "excluded_episodes": prev.get("excluded_episodes", []),
             }
+            if "episodes_per_slot" in prev:
+                show_cfg["episodes_per_slot"] = prev["episodes_per_slot"]
 
             # Per-show episode exclusions
             want_excl = d.yesno(
@@ -280,10 +309,7 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
                 # Shuffle loop
                 while True:
                     _random.shuffle(selected_shows)
-                    new_order = "\n".join(
-                        "{}. {}".format(i + 1, s["title"])
-                        for i, s in enumerate(selected_shows))
-                    d.ok(order_title, new_order[:300])
+                    show_order_listing(d, order_title, selected_shows)
                     shuf = d.yesno(
                         order_title,
                         addon.getLocalizedString(32249),
@@ -307,10 +333,8 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
                             break
                         ordered.append(remaining[pick])
                         remaining.pop(pick)
-                    summary = "\n".join(
-                        "{}. {}".format(i + 1, s["title"])
-                        for i, s in enumerate(ordered))
-                    d.ok(addon.getLocalizedString(32247), summary)
+                    show_order_listing(d, addon.getLocalizedString(32247),
+                                       ordered)
                     confirm = d.yesno(
                         addon.getLocalizedString(32247),
                         addon.getLocalizedString(32249),
@@ -332,8 +356,17 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
         if len(selected_shows) >= 1 and not takes_turns:
             any_nondefault = any(
                 s.get("episodes_per_slot", 1) != 1 for s in selected_shows)
+            ask_for       = selected_shows     # shows that get a number box
+            keep_existing = False
             if any_nondefault:
-                do_eps = True
+                # Editing a slot that already has custom counts (3.1.152).
+                mode, ask_for = ask_keep_change_episodes(
+                    addon, d, selected_shows,
+                    existing_shows_list)
+                if mode == "keep":
+                    do_eps, keep_existing = False, True
+                else:
+                    do_eps = True
             else:
                 if len(selected_shows) > 1:
                     body = addon.getLocalizedString(32269)    # ...per combo unit...
@@ -347,7 +380,7 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
                     yeslabel=addon.getLocalizedString(32273),  # Yes, Customize
                     defaultbutton=xbmcgui.DLG_YESNO_NO_BTN))
             if do_eps:
-                for show in selected_shows:
+                for show in ask_for:
                     cur_eps = int(show.get("episodes_per_slot", 1))
                     eps_str = d.input(
                         addon.getLocalizedString(32267).format(
@@ -358,7 +391,7 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
                         show["episodes_per_slot"] = max(1, int(eps_str or cur_eps))
                     except (ValueError, TypeError):
                         show["episodes_per_slot"] = cur_eps
-            else:
+            elif not keep_existing:
                 for show in selected_shows:
                     show.pop("episodes_per_slot", None)
 
@@ -521,6 +554,20 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
                 matched = manager.library.get_movies_with_filters(slot["filters"])
                 d.ok(addon.getLocalizedString(32447),
                      addon.getLocalizedString(32521).format(len(matched)))
+                # Extra movies outside the filters (3.1.152): kept on the
+                # slot flagged "pinned"; the queue builder adds them to the
+                # filter matches.  Extras already on the slot are ticked.
+                extras_ex = {"movies": [m for m in ex.get("movies", [])
+                                        if m.get("pinned")]}
+                with_extras = add_extra_movies(
+                    addon, manager, d, extras_ex, all_movies,
+                    slot["filters"], all_movies)
+                if with_extras is None:
+                    return None
+                slot["movies"] = [
+                    {"movieid": m["movieid"], "pinned": True,
+                     "title": m.get("label", m.get("title", ""))}
+                    for m in with_extras if m.get("pinned")]
 
         # Exclusions (only meaningful for all-movies or filter modes)
         if method_choice != 1:
@@ -616,6 +663,16 @@ def _run_slot_wizard(addon, manager, d, existing_slot) -> dict | None:
                 slot["episodes_per_slot"] = cur_fps
         else:
             slot.pop("episodes_per_slot", None)
+
+    elif source_type == "file":
+        file_path = browse_media_file(addon, ex.get("file_path", ""))
+        if not file_path:
+            return None
+        if not xbmcvfs.exists(file_path):
+            d.ok(addon.getLocalizedString(32000),
+                 addon.getLocalizedString(32955).format(file_path))
+            return None
+        slot["file_path"] = file_path
 
     # Silent — asked at slot level for all source types.
     # TV slots: one question covers all shows in the slot (they rotate

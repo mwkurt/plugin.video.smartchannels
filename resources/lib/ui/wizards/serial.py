@@ -12,7 +12,7 @@ import xbmcgui
 
 from resources.lib.ui.dialogs import (
     build_episode_exclusions, ask_queue_size, ask_visibility,
-    ask_starting_episode)
+    ask_starting_episode, show_order_listing)
 
 
 def run(addon, manager, name: str, existing: dict | None) -> dict | None:
@@ -86,10 +86,7 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
                         break
                     ordered.append(remaining[pick])
                     remaining.pop(pick)
-                summary = "\n".join(
-                    "{}. {}".format(i + 1, s["title"])
-                    for i, s in enumerate(ordered))
-                d.ok(addon.getLocalizedString(32247), summary)
+                show_order_listing(d, addon.getLocalizedString(32247), ordered)
                 confirm = d.yesno(
                     addon.getLocalizedString(32247),
                     addon.getLocalizedString(32249),
@@ -104,10 +101,8 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
             # Shuffle
             while True:
                 random.shuffle(selected_shows)
-                new_order = "\n".join(
-                    "{}. {}".format(i + 1, s["title"])
-                    for i, s in enumerate(selected_shows))
-                d.ok(addon.getLocalizedString(32311), new_order[:300])
+                show_order_listing(d, addon.getLocalizedString(32311),
+                                   selected_shows)
                 shuf = d.yesno(
                     addon.getLocalizedString(32311),
                     addon.getLocalizedString(32249),

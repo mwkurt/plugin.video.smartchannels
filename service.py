@@ -20,6 +20,7 @@ import enum
 import json
 import os
 import threading
+import time
 
 import xbmc
 import xbmcaddon
@@ -30,12 +31,27 @@ from resources.lib.channel_manager import ChannelManager
 from resources.lib.carousel        import tick_carousel
 from resources.lib.player          import SmartPlayer
 from resources.lib.utils.channel_wait import (stop_waiting, waiting_entries)
+from resources.lib.utils           import journal
 from resources.lib.utils.logger    import log
 
 
 # ---------------------------------------------------------------------------
 # StopReason enum  (spec §1.10, §23)
 # ---------------------------------------------------------------------------
+
+# An item that cannot be opened is skipped at most this many times in a row
+# before the channel is left stopped (a share that is offline must not eat
+# the whole queue).  3.1.132.
+MAX_UNPLAYABLE_IN_A_ROW = 5
+# A Stop that arrives this soon after onPlayBackStarted, before any AV event,
+# is a failed open rather than a user stop.
+FAILED_OPEN_WINDOW_S = 15
+# Kodi's full-screen video window id.
+WINDOW_FULLSCREEN_VIDEO = 12005
+# URL schemes whose existence xbmcvfs.exists can answer for a media file.
+_CHECKABLE_SCHEMES = frozenset(
+    ("smb", "nfs", "special", "file", "ftp", "sftp", "dav", "davs"))
+
 
 class StopReason(enum.Enum):
     NATURAL    = "natural"
@@ -62,6 +78,10 @@ class SmartChannelsPlayer(xbmc.Player):
         self._channel:    dict | None = None
         self._queue:      list        = []
         self._queue_pos:  int         = 0
+        # Item named in the journal's play_start, so play_end / play_stop name
+        # the item that was playing even if the queue changed meanwhile
+        # (carousel pop, block replacement).  Journal only.  (3.1.157)
+        self._journal_item: dict | None = None
         self._lock = threading.Lock()
 
         # Stop reason — set BEFORE any programmatic stop (spec §1.10)
@@ -81,13 +101,30 @@ class SmartChannelsPlayer(xbmc.Player):
         # block items from disk and plays them before resuming normal content.
         # Ported from 2.x _pending_block_reload / _maybe_start_block_reload.
         self._pending_block_channel: dict | None = None
-        # _block_count_last: (schedule_id, file) de-dupe guard so a single
+        # _block_count_last: (schedule_id, file, block seq) de-dupe guard so a single
         # block item is never counted twice even if onPlayBackEnded fires
         # for a skipped item.  Ported from 2.x _block_count_last / _count_block_item.
         self._block_count_last: tuple | None = None
         # Suppresses false skip detection on the onAVStarted callback
         # triggered by start_channel() during a block reload.
         self._block_reload_pending: bool = False
+        # True only while onPlayBackEnded is preparing a block reload (the
+        # finished episode is being replaced on disk).  Kodi may already have
+        # started the next item of its old playlist; onAVStarted must not
+        # read that as a user skip (3.1.130).
+        self._block_reload_preparing: bool = False
+        # Unplayable-item detection (3.1.132).  _started_at is set by
+        # onPlayBackStarted and cleared once the Stop it may lead to has been
+        # looked at; _av_seen is set when onAVStarted arrives, which a file
+        # that fails to open never produces.
+        self._started_at: float = 0.0
+        # Counts playback starts, so a deferred stop can tell that a new
+        # playback began after the Stop it belongs to (3.1.134).
+        self._play_seq: int = 0
+        # Set when Kodi is closing: no timer may be started again.
+        self._closing: bool = False
+        self._av_seen: bool = False
+        self._unplayable_streak: int = 0
         # Consecutive 60 s ticks with nothing playing while this device still
         # holds a channel lock (3.1.109).  Two in a row release the lock.
         self._idle_lock_ticks: int = 0
@@ -221,7 +258,11 @@ class SmartChannelsPlayer(xbmc.Player):
         """
         if not schedule_id:
             return
-        identity = (schedule_id, item.get("file", ""))
+        # _block_seq is the item's place in its block, so the same file
+        # twice in a row (a single-file slot) is two items.  A block fired
+        # before 3.1.128 has none and is matched by file as before.
+        identity = (schedule_id, item.get("file", ""),
+                    item.get("_block_seq"))
         if self._block_count_last == identity:
             log("[service] block count: duplicate suppressed for "
                 "schedule='{}' ({})".format(schedule_id[:8], source))
@@ -257,6 +298,12 @@ class SmartChannelsPlayer(xbmc.Player):
         # file handle is guaranteed to be ready.
         log("[service] onPlayBackStarted")
         self._stop_reason = StopReason.UNKNOWN
+        self._started_at  = time.time()
+        self._play_seq   += 1
+        self._av_seen     = False
+        # The position polled for the PREVIOUS item must never be saved as a
+        # resume point for an item that has not started (3.1.132).
+        self._resume_pos  = 0.0
 
     def onAVStarted(self) -> None:
         # By the time onAVStarted fires, Kodi has the file open and
@@ -270,6 +317,8 @@ class SmartChannelsPlayer(xbmc.Player):
                          daemon=True).start()
 
     def _on_av_started_worker(self) -> None:
+        self._av_seen = True
+        self._unplayable_streak = 0
         try:
             channel_id = self._read_active_channel_id()
             if not channel_id:
@@ -312,7 +361,16 @@ class SmartChannelsPlayer(xbmc.Player):
                         "queue_len={}".format(
                         new_pos, self._queue_pos, len(self._queue)))
                     if new_pos > self._queue_pos:
-                        if self._block_reload_pending:
+                        if self._block_reload_preparing:
+                            # The natural-end handler is still preparing the
+                            # block reload; Kodi has moved on in its old
+                            # playlist.  This is not a skip, and the block
+                            # items must not be counted as skipped (3.1.130).
+                            log("[service] onAVStarted: block reload being "
+                                "prepared — skip detection suppressed "
+                                "(pos {} -> {})".format(
+                                    self._queue_pos, new_pos))
+                        elif self._block_reload_pending:
                             # False skip — this is the Kodi playlist transition
                             # caused by start_channel() during a block reload.
                             # Block items at the front are real content, not
@@ -325,6 +383,14 @@ class SmartChannelsPlayer(xbmc.Player):
                             log("[service] onAVStarted: skip detected "
                                 "(was={} now={})".format(
                                 self._queue_pos, new_pos))
+                            journal.record(
+                                "skip_detected",
+                                ch="{} ({})".format(
+                                    (self._channel or {}).get("name", "?"),
+                                    str(channel_id)[:8]),
+                                was=self._queue_pos, now=new_pos,
+                                skipped=[journal.item_summary(i) for i in
+                                         self._queue[self._queue_pos:new_pos]])
                             # Release lock before calling _handle_skip which
                             # needs the lock itself to update shared state.
                             self._lock.release()
@@ -333,6 +399,10 @@ class SmartChannelsPlayer(xbmc.Player):
                             finally:
                                 self._lock.acquire()
                             new_pos = 0
+                    elif self._block_reload_pending:
+                        # The restart landed on the expected item: no forward
+                        # jump is left to suppress (3.1.130).
+                        self._block_reload_pending = False
                 else:
                     log("[service] onAVStarted: could not get playing file "
                         "— defaulting to queue[0]")
@@ -344,6 +414,14 @@ class SmartChannelsPlayer(xbmc.Player):
             log("[service] onAVStarted: playing queue[{}] '{}'".format(
                 new_pos,
                 snap_queue[new_pos].get("title", "?") if snap_queue else "?"))
+            if snap_queue and new_pos < len(snap_queue):
+                journal.record(
+                    "play_start",
+                    ch="{} ({})".format((snap_channel or {}).get("name", "?"),
+                                        str(channel_id)[:8]),
+                    pos=new_pos, queue_len=len(snap_queue),
+                    item=journal.item_summary(snap_queue[new_pos]))
+                self._journal_item = journal.item_summary(snap_queue[new_pos])
 
             # Update now_playing.json — outside lock (disk I/O)
             if snap_queue and new_pos < len(snap_queue):
@@ -392,6 +470,44 @@ class SmartChannelsPlayer(xbmc.Player):
 
     def onPlayBackEnded(self) -> None:
         log("[service] onPlayBackEnded")
+        self._journal_play("play_end")
+        # A scheduled block is waiting for this item to end: the end handler
+        # will replace the finished episode on disk and reload the queue
+        # (up to a second or more on a shared folder).  Kodi meanwhile starts
+        # the next item of its OLD playlist; _on_av_started_worker must not
+        # read that as a user skip.  The flag is therefore raised before ANY
+        # work in this handler and always cleared when it returns.
+        if self._pending_block_channel is not None and self._channel_id:
+            self._block_reload_preparing = True
+        try:
+            self._on_playback_ended()
+        finally:
+            self._block_reload_preparing = False
+
+    def _journal_play(self, event: str, **extra) -> None:
+        """Journal a playback event with the item at the current queue
+        position.  Reads only; never changes state."""
+        if event in ("play_end", "play_stop"):
+            journal.note_playback_end()
+        try:
+            item = (self._queue[self._queue_pos]
+                    if self._queue and 0 <= self._queue_pos < len(self._queue)
+                    else None)
+            summary = journal.item_summary(item) if item else None
+            if event in ("play_end", "play_stop"):
+                # Name the item that play_start named: by now the queue may
+                # have been changed and queue[pos] can be the next item.
+                if self._journal_item is not None:
+                    summary = self._journal_item
+                self._journal_item = None
+            name = (self._channel or {}).get("name", "?")
+            journal.record(
+                event, ch="{} ({})".format(name, str(self._channel_id)[:8]),
+                pos=self._queue_pos, item=summary, **extra)
+        except Exception:
+            pass
+
+    def _on_playback_ended(self) -> None:
         self._stop_reason = StopReason.NATURAL
         self._stop_poll()
 
@@ -489,6 +605,9 @@ class SmartChannelsPlayer(xbmc.Player):
         # the 1-for-1 invariant is maintained.  start_channel() then reloads
         # from the corrected disk queue: [block1, block2, ..., replacements...].
         if self._pending_block_channel is not None:
+            # (the caller raised _block_reload_preparing and clears it; set
+            # here too in case the block was queued after that check)
+            self._block_reload_preparing = True
             self._consume_finished_before_block_reload()
             self._queue_pos += 1
             self._maybe_start_block_reload()
@@ -507,6 +626,19 @@ class SmartChannelsPlayer(xbmc.Player):
 
     def onPlayBackStopped(self) -> None:
         log("[service] onPlayBackStopped (reason={})".format(self._stop_reason))
+        self._journal_play("play_stop", reason=str(self._stop_reason))
+        # A Stop that follows onPlayBackStarted with no AV event in between
+        # may be a file that failed to open.  Read the active channel before
+        # now_playing.json is cleared below.
+        stop_seq = self._play_seq
+        failed_open_channel = None
+        if (self._started_at and not self._av_seen
+                and time.time() - self._started_at < FAILED_OPEN_WINDOW_S
+                and self._stop_reason not in (StopReason.HARD_START,
+                                              StopReason.NATURAL)):
+            failed_open_channel = (self._read_active_channel_id()
+                                   or self._channel_id)
+        self._started_at = 0.0
         self._stop_poll()
         self._logo_overlay.hide_permanent()
         self._pending_overlay = None
@@ -523,6 +655,30 @@ class SmartChannelsPlayer(xbmc.Player):
 
         self._stop_reason = StopReason.UNKNOWN
 
+        if failed_open_channel:
+            # Kodi can deliver this Stop while onPlayBackEnded is still
+            # inside its replacement draw: the draw waits in xbmc.sleep, which
+            # lets Kodi run the next callbacks on THIS thread, and it holds
+            # self._lock.  Taking the lock here would wait for ourselves for
+            # ever and freeze the service (PC 10/31 10:27).  The decision is
+            # therefore made on a worker thread, which can wait for the lock
+            # while this callback returns and the draw finishes.  3.1.133.
+            threading.Thread(target=self._stopped_before_start,
+                             args=(failed_open_channel, stop_seq),
+                             daemon=True).start()
+            return
+
+        self._process_user_stop(stop_seq)
+
+    def _stopped_before_start(self, channel_id: str, stop_seq: int) -> None:
+        """Worker for a Stop that came before any AV event: skip the item if
+        its file is missing, otherwise handle it as an ordinary stop."""
+        if not self._handle_unplayable_open(channel_id):
+            self._process_user_stop(stop_seq)
+
+    def _process_user_stop(self, stop_seq: int) -> None:
+        # Ordinary stop handling.  Identical to 3.1.131 whenever the lock is
+        # free; see below for the case where it is not (3.1.134).
         if not self._channel_id:
             return
 
@@ -538,18 +694,240 @@ class SmartChannelsPlayer(xbmc.Player):
                         self._resume_pos, stopped_item.get("title", "")))
 
         stopped_channel = self._channel_id
-        with self._lock:
-            self._channel_id = None
-            self._channel    = None
-            self._queue      = []
-            self._queue_pos  = 0
+        # Kodi can deliver this Stop while onPlayBackEnded is still inside its
+        # replacement draw (the draw waits in xbmc.sleep, which lets Kodi run
+        # the next callbacks on THIS thread, and it holds self._lock).  Waiting
+        # for the lock here would wait for ourselves for ever and freeze the
+        # service.  So the lock is only TRIED: when it is free (always, today)
+        # nothing changes; when it is busy the clearing is handed to a worker
+        # thread, which waits for the draw to finish.
+        if self._lock.acquire(blocking=False):
+            try:
+                self._clear_channel_state()
+            finally:
+                self._lock.release()
+            self._release_stopped_channel(stopped_channel)
+        else:
+            log("[service] onPlayBackStopped: queue update in progress - "
+                "stop finished on a worker thread")
+            threading.Thread(target=self._finish_stop_when_free,
+                             args=(stopped_channel, stop_seq),
+                             daemon=True).start()
 
+    def _clear_channel_state(self) -> None:
+        # Caller holds self._lock.
+        self._channel_id = None
+        self._channel    = None
+        self._queue      = []
+        self._queue_pos  = 0
+
+    def _release_stopped_channel(self, stopped_channel: str) -> None:
         # The user stopped the channel: free it for other devices at once.
         try:
             self._get_manager().release_channel_lock(stopped_channel)
         except Exception as exc:
             log("[service] release_channel_lock error: {}".format(exc),
                 level=xbmc.LOGWARNING)
+
+    def _finish_stop_when_free(self, stopped_channel: str,
+                               stop_seq: int) -> None:
+        """Worker: clear the stopped channel once the queue update that held
+        the lock has finished.  If a new playback began meanwhile, that
+        playback owns the state now and nothing is cleared."""
+        with self._lock:
+            if self._play_seq != stop_seq:
+                log("[service] deferred stop: a new playback started - "
+                    "state left alone")
+                return
+            self._clear_channel_state()
+        self._release_stopped_channel(stopped_channel)
+
+    def shutdown(self) -> None:
+        """Stop every timer this player owns, as Kodi is closing.
+
+        Kodi waits for all Python threads of the service before it lets Kodi
+        finish, and kills the service after 5 s (PC 10/31 11:04: "script
+        didn't stop in 5 seconds").  The position poll is a threading.Timer
+        that sleeps for the whole poll interval (default 60 s), so one was
+        always pending while a channel played; the logo and Coming Up Next
+        overlays have timers of their own.  Cancelling them lets the service
+        end at once."""
+        self._closing = True
+        self._stop_poll()
+        try:
+            self._logo_overlay.hide_permanent()
+        except Exception as exc:
+            log("[service] shutdown: logo overlay error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+        try:
+            from resources.lib.overlays.coming_up_next import hide_overlay
+            hide_overlay()
+        except Exception as exc:
+            log("[service] shutdown: overlay error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+
+    def _handle_unplayable_open(self, channel_id: str) -> bool:
+        """The item Kodi just tried to open is missing: skip it and carry on.
+
+        Kodi reports a file that cannot be opened as onPlayBackStarted
+        followed by onPlayBackStopped (no onAVStarted, no onPlayBackError),
+        which used to leave the channel stopped on the same item.  The front
+        of the disk queue is the item that was being opened.  Only a file that
+        is really absent is treated this way; if it exists the Stop is handled
+        as an ordinary user stop.  The item is logged, popped with its resume
+        point, one replacement is appended (the same path as a skip), and the
+        channel is restarted from the corrected queue.
+
+        Guards: a missing neighbour as well means the share is probably
+        unreachable (nothing is skipped), and at most
+        MAX_UNPLAYABLE_IN_A_ROW items are skipped in a row.
+        Returns True when the channel was restarted.
+        """
+        try:
+            manager = self._get_manager()
+            with self._lock:
+                queue = manager.get_channel_queue(channel_id)
+                if not queue:
+                    return False
+                front = queue[0]
+                path  = front.get("file", "") or ""
+                scheme = path.split("://", 1)[0].lower() if "://" in path else ""
+                if (not path or (scheme and scheme not in _CHECKABLE_SCHEMES)
+                        or xbmcvfs.exists(path)):
+                    log("[service] stopped before playback began: '{}' is "
+                        "present - handled as a normal stop".format(
+                            front.get("title", "?")))
+                    return False
+
+                neighbours = [it.get("file", "") for it in queue[1:3]
+                              if it.get("file")]
+                if neighbours and not any(
+                        xbmcvfs.exists(f) for f in neighbours):
+                    log("[service] unplayable item '{}' but its neighbours "
+                        "are missing too - share unreachable? nothing "
+                        "skipped".format(front.get("title", "?")),
+                        level=xbmc.LOGWARNING)
+                    return False
+
+                if self._unplayable_streak >= MAX_UNPLAYABLE_IN_A_ROW:
+                    log("[service] {} unplayable items in a row - leaving "
+                        "the channel stopped".format(self._unplayable_streak),
+                        level=xbmc.LOGWARNING)
+                    self._unplayable_streak = 0
+                    return False
+                self._unplayable_streak += 1
+                log("[service] unplayable item: {}".format(self._gui_state()))
+
+                log("[service] UNPLAYABLE item skipped: '{}' {} S{}E{} - file "
+                    "not found: {}".format(
+                        front.get("title", "?"),
+                        front.get("tvshowtitle", ""),
+                        front.get("season", "?"), front.get("episode", "?"),
+                        path), level=xbmc.LOGWARNING)
+                replacements, block_items = \
+                    manager.skip_items_with_replacement(channel_id, queue, 1)
+                manager.write_channel_queue(channel_id, queue)
+                log("[service] unplayable item popped; replacement: {}".format(
+                    ", ".join(r.get("title", "?") for r in replacements)
+                    or "none"))
+                self._channel_id = channel_id
+                self._channel    = manager.get_channel(channel_id)
+                self._queue      = queue
+                self._queue_pos  = 0
+                self._resume_pos = 0.0
+                channel = self._channel
+
+            # Counting a block item saves state: after the queue write.
+            for it in block_items:
+                self._count_block_item(it["_schedule_id"], it, "unplayable")
+
+            if not channel:
+                return False
+
+            def _restart() -> None:
+                try:
+                    # Kodi is closing: do not start playback into a shutdown.
+                    if xbmc.Monitor().abortRequested():
+                        return
+                    SmartPlayer(self.addon, self._get_manager()
+                                ).start_channel(channel)
+                    self._show_fullscreen_when_playing()
+                except Exception as exc:
+                    log("[service] unplayable item: restart error: {}"
+                        .format(exc), level=xbmc.LOGWARNING)
+
+            # Off the callback thread: play() must not be called from one.
+            threading.Thread(target=_restart, daemon=True).start()
+            return True
+        except Exception as exc:
+            log("[service] _handle_unplayable_open error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+            return False
+
+    def _gui_state(self) -> str:
+        """One line describing what Kodi's GUI and player are doing now (for
+        the log; used to find out why a restarted channel plays behind the
+        home screen)."""
+        try:
+            return ("window={} dialog={} fullscreen_active={} "
+                    "modal_dialog={} playing={} video={}".format(
+                        xbmcgui.getCurrentWindowId(),
+                        xbmcgui.getCurrentWindowDialogId(),
+                        bool(xbmc.getCondVisibility(
+                            "Window.IsActive(fullscreenvideo)")),
+                        bool(xbmc.getCondVisibility("System.HasModalDialog")),
+                        bool(self.isPlaying()), bool(self.isPlayingVideo())))
+        except Exception as exc:
+            return "unreadable ({})".format(exc)
+
+    def _show_fullscreen_when_playing(self, wait_s: int = 10,
+                                      watch_s: int = 8) -> None:
+        """Bring the video to full screen after an automatic restart.
+
+        When the unplayable item stopped playback Kodi went back to the home
+        screen; playback started from the service played behind it
+        (PC 10/31 11:04 and 11:12).  3.1.135 checked once and did nothing, so
+        this version waits for playback, then WATCHES for watch_s seconds:
+        every change of the GUI state is logged (diagnostic), and whenever
+        video is playing but the full-screen video window is not showing, any
+        dialog is closed and the full-screen window is
+        opened, at most 3 times.  Open dialogs are always closed first (the
+        modal-dialog condition missed Kodi's failed-to-play box in 3.1.136)."""
+        mon = xbmc.Monitor()
+        log("[service] fullscreen: restart done - {}".format(self._gui_state()))
+        for _ in range(wait_s * 4):
+            if self.isPlaying():
+                break
+            xbmc.sleep(250)
+        else:
+            log("[service] fullscreen: playback never began - {}".format(
+                self._gui_state()))
+            return
+        last = None
+        attempts = 0
+        for _ in range(watch_s * 2):
+            if self._closing or mon.abortRequested():
+                return
+            state = self._gui_state()
+            if state != last:
+                log("[service] fullscreen: {}".format(state))
+                last = state
+            if (attempts < 3 and self.isPlayingVideo()
+                    and xbmcgui.getCurrentWindowId()
+                    != WINDOW_FULLSCREEN_VIDEO):
+                attempts += 1
+                # Always close any open dialog first.  Kodi's "One or more
+                # items failed to play" box refuses the window change but
+                # System.HasModalDialog does not report it (PC 10/31 11:33),
+                # so the condition cannot be trusted.  Only reached within
+                # watch_s of an automatic restart, while video is playing
+                # and the video window is not showing.
+                xbmc.executebuiltin("Dialog.Close(all,true)", True)
+                xbmc.sleep(250)
+                xbmc.executebuiltin("ActivateWindow(fullscreenvideo)")
+                log("[service] restarted channel brought to full screen "
+                    "(attempt {})".format(attempts))
+            xbmc.sleep(500)
 
     def onPlayBackError(self) -> None:
         log("[service] onPlayBackError")
@@ -669,6 +1047,10 @@ class SmartChannelsPlayer(xbmc.Player):
 
             consumed_cid = (consumed_item.get("_channel_id")
                             or consumed_item.get("channel_id", ""))
+            journal.record(
+                "pop", ch=manager.journal_channel_name(self._channel_id),
+                src=journal.chain(1, 4), queue_after=len(queue),
+                item=journal.item_summary(consumed_item))
 
             replacement = None
             if manager.is_combo_channel(consumed_cid):
@@ -686,6 +1068,10 @@ class SmartChannelsPlayer(xbmc.Player):
                         .format(replacement.get("title", "?")))
                 else:
                     log("[service] _do_replacement: no replacement returned")
+            journal.record(
+                "append", ch=manager.journal_channel_name(self._channel_id),
+                item=journal.item_summary(replacement) if replacement else None,
+                queue_now=len(queue))
 
             manager.write_channel_queue(self._channel_id, queue)
             self._queue = queue
@@ -790,66 +1176,15 @@ class SmartChannelsPlayer(xbmc.Player):
                 item.get("title", "?"))
             for item in skipped)))
 
-        # Clear any saved resume positions for skipped items.
-        for item in skipped:
-            f = item.get("file", "")
-            if f:
-                manager.clear_resume_position(channel_id, f)
-
-        # Fire 1-for-1 replacement for every skipped item, preserving the
-        # original interleave order in the appended tail.
-        #
-        # Combo slots: call build_one_slot for the specific slot that was
-        # skipped — same strict 1-for-1 behaviour as natural playback.
-        # No tracker, no unit counting, no remainder logic needed.
-        #
-        # Primary items: 1-for-1 via get_one_replacement as usual.
-        from resources.lib.channels.combo import ComboQueueBuilder
+        # Pop every skipped item and append its 1-for-1 replacement (combo
+        # slots, block items and primary items are handled in one place,
+        # ChannelManager.skip_items_with_replacement, shared with the side
+        # panel "play from this item" and unplayable-item handling).  The
+        # now-playing item becomes index 0.
+        replacements, skipped_block_items = \
+            manager.skip_items_with_replacement(channel_id, queue, current_pos)
         from resources.lib.player import _make_listitem
 
-        replacements = []   # all replacements for Kodi playlist
-        skipped_block_items = []   # scheduled block items, counted at the end
-        for item in skipped:
-            # Scheduled block items are foreign to the target channel and do
-            # not repeat: popped with NO replacement, exactly as on natural
-            # end and in the carousel. _schedule_id takes precedence over
-            # _interleaved — combo-sourced block items carry both.
-            if item.get("_schedule_id"):
-                skipped_block_items.append(item)
-                continue
-            consumed_cid = item.get("_channel_id") or item.get("channel_id", "")
-            if manager.is_combo_channel(consumed_cid):
-                combo_ch = manager.get_channel(consumed_cid)
-                if not combo_ch:
-                    continue
-                consumed_slot_id = item.get("_combo_slot", "")
-                slots = combo_ch.get("slots", [])
-                slot_index = next(
-                    (i for i, s in enumerate(slots)
-                     if s.get("slot_id", "") == consumed_slot_id), None)
-                if slot_index is None:
-                    log("[service] _handle_skip: slot_id {} not found — "
-                        "skipping replacement".format(consumed_slot_id[:8]),
-                        level=xbmc.LOGWARNING)
-                    continue
-                new_items = ComboQueueBuilder(
-                    manager).build_one_slot(
-                        combo_ch, slot_index, host_queue=queue)
-                if new_items:
-                    queue.extend(new_items)
-                    replacements.extend(new_items)
-                    log("[service] _handle_skip: replaced combo slot {} "
-                        "with '{}'".format(slot_index,
-                        new_items[0].get("title", "?")))
-            else:
-                replacement = manager.get_one_replacement(
-                    channel_id, item, current_queue=queue)
-                if replacement:
-                    queue.append(replacement)
-                    replacements.append(replacement)
-
-        # Remove skipped items from disk queue — now-playing becomes index 0.
-        del queue[:current_pos]
         with self._lock:
             manager.write_channel_queue(channel_id, queue)
             self._queue     = queue
@@ -900,6 +1235,8 @@ class SmartChannelsPlayer(xbmc.Player):
             self._poll_timer = None
 
     def _schedule_poll(self) -> None:
+        if self._closing:
+            return
         self._poll_timer = threading.Timer(
             self._poll_interval, self._poll_position)
         self._poll_timer.daemon = True
@@ -1232,9 +1569,45 @@ def _run_tick_loop(player: SmartChannelsPlayer,
             _tick_channel_lock(player)
             _tick_carousel(player)
             _tick_scheduler(player)
+            _tick_library_upkeep(player)
 
         if tick % 3600 == 0:
             _tick_cache_ages(player)
+            try:
+                ChannelManager(player.addon).journal_snapshot()
+            except Exception as exc:
+                log("[service] journal snapshot error: {}".format(exc),
+                    level=xbmc.LOGWARNING)
+
+        if tick % 21600 == 0:
+            _service_remove_stale_resume(player.addon)
+            _service_remove_stale_locks(player.addon)
+
+
+def _service_remove_stale_resume(addon) -> None:
+    """Remove resume points of episodes no longer in their channel's queue.
+    Run at start-up and every 6 hours.  (3.1.127)"""
+    try:
+        removed = ChannelManager(addon).remove_stale_resume_points()
+        if removed:
+            log("[service] removed {} stale resume point(s)".format(removed))
+    except Exception as exc:
+        log("[service] stale resume cleanup error: {}".format(exc),
+            level=xbmc.LOGWARNING)
+
+
+def _service_remove_stale_locks(addon) -> None:
+    """Remove leftover channel_lock_<id>.json files (closed without release,
+    or the channel was deleted).  Run at start-up and every 6 hours.
+    (3.1.130)"""
+    try:
+        removed = ChannelManager(addon).remove_stale_channel_locks()
+        if removed:
+            log("[service] removed {} leftover channel lock file(s)".format(
+                removed))
+    except Exception as exc:
+        log("[service] channel lock cleanup error: {}".format(exc),
+            level=xbmc.LOGWARNING)
 
 
 def _tick_channel_lock(player: SmartChannelsPlayer) -> None:
@@ -1314,11 +1687,13 @@ def _tick_scheduler(player: SmartChannelsPlayer) -> None:
     onPlayBackEnded can reload the channel and play the block at the next
     natural item boundary.  spec §14.
 
-    Only the client that is playing the schedule's target channel fires it.
-    The channel id passed to the scheduler is this client's own channel, and
-    only while Kodi is really playing (the id can outlive the last item
-    after a natural end), so a client playing something else, or nothing,
-    never fires a block.
+    Who fires is decided in scheduler.py (3.1.115): the device playing the
+    target channel, or - when no device is playing it - any running device on
+    the same shared folder, after claiming the schedule.  Here the channel id
+    passed in is this client's own channel, and only while Kodi is really
+    playing (the id can outlive the last item after a natural end).  The
+    reload below is queued only when the block went into the channel this
+    client is playing.
     """
     try:
         from resources.lib.scheduler import ScheduleManager
@@ -1330,6 +1705,11 @@ def _tick_scheduler(player: SmartChannelsPlayer) -> None:
         fired_targets = ScheduleManager().check_all(
             manager,
             now_playing_channel_id=playing_id)
+
+        # Block expiry by slot (setting, default off): take out block items
+        # whose time slot has ended.  (3.1.155)
+        ScheduleManager().expire_blocks(
+            manager, now_playing_channel_id=playing_id)
 
         if playing_id and playing_id in fired_targets:
             # The target channel is currently playing — schedule a reload
@@ -1401,6 +1781,43 @@ def _service_ensure_caches(addon: xbmcaddon.Addon,
     threading.Thread(target=_build_songs,  daemon=True).start()
 
 
+_UPKEEP_RUNNING = threading.Event()
+
+
+def _tick_library_upkeep(player: SmartChannelsPlayer) -> None:
+    """Library upkeep, every 60 s from the tick loop.  (3.1.156)
+
+    Every device reloads its library lists when local_library.json has been
+    rewritten.  When the upkeep setting is on and the daily run is due, one
+    worker per device tries to claim it; the job (rebuild the library cache,
+    repair queue paths, put back missing shows) runs on a background thread
+    so the tick loop is not blocked.
+    """
+    try:
+        manager = player._get_manager()
+        manager.library.refresh_if_cache_changed()
+        if _UPKEEP_RUNNING.is_set() or not manager.library_upkeep_due():
+            return
+        _UPKEEP_RUNNING.set()
+    except Exception as exc:
+        log("[service] _tick_library_upkeep error: {}".format(exc),
+            level=xbmc.LOGWARNING)
+        return
+
+    def _work():
+        try:
+            worker = ChannelManager(player.addon)
+            if worker.claim_library_upkeep():
+                worker.run_library_upkeep()
+        except Exception as exc:
+            log("[service] library upkeep error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+        finally:
+            _UPKEEP_RUNNING.clear()
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
 def _service_repair_missing_shows(monitor: xbmc.Monitor,
                                   addon: xbmcaddon.Addon) -> None:
     """Once after start, put back any show missing from a TV channel queue.
@@ -1434,14 +1851,30 @@ if __name__ == "__main__":
 
     log("[service] Service started — profile={}".format(
         xbmcvfs.translatePath(addon.getAddonInfo("profile"))))
+    try:
+        _jm = ChannelManager(addon)
+        journal.start(_jm.get_device_label(), addon.getAddonInfo("version"))
+        _jm.journal_snapshot()
+    except Exception as exc:
+        log("[service] journal start error: {}".format(exc),
+            level=xbmc.LOGWARNING)
 
     # Build library caches on first run so channels can be created immediately
     # without the user needing to open the addon first.
     # Use a fresh ChannelManager instance for the cache check.
     _service_ensure_caches(addon, ChannelManager(addon))
+    try:
+        ChannelManager(addon).remove_orphan_local_queues()
+    except Exception as exc:
+        log("[service] leftover queue file cleanup error: {}".format(exc),
+            level=xbmc.LOGWARNING)
+    _service_remove_stale_resume(addon)
+    _service_remove_stale_locks(addon)
     _service_repair_missing_shows(monitor, addon)
 
     _run_tick_loop(player, monitor)
+    # Kodi is closing: cancel the timers so the service can end at once.
+    player.shutdown()
     # Kodi is closing: free any channel this device was holding.
     try:
         _mgr = ChannelManager(addon)
@@ -1449,4 +1882,5 @@ if __name__ == "__main__":
     except Exception as exc:
         log("[service] shutdown lock release error: {}".format(exc),
             level=xbmc.LOGWARNING)
+    journal.stop()
     log("[service] Service stopped")

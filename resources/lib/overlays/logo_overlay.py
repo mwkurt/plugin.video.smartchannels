@@ -20,6 +20,8 @@ import xbmc
 import xbmcgui
 import xbmcaddon
 
+from resources.lib.utils.logger import log
+
 # ── Size constants ────────────────────────────────────────────────────────────
 # Kodi logical coordinate space is 1280x720 regardless of physical resolution.
 SIZE_MAP = {
@@ -140,11 +142,11 @@ class SmartChannelsLogoOverlay:
             win.show_timed()
             with self._lock:
                 self._window = win
-            xbmc.log("[plugin.video.smartchannels] [LogoOverlay] shown for {}s: {} "
+            log("[LogoOverlay] shown for {}s: {} "
                      "corner={} size={}px".format(
                          duration, icon_path, corner_key, size), xbmc.LOGINFO)
         except Exception as e:
-            xbmc.log("[plugin.video.smartchannels] [LogoOverlay] show error: {}".format(
+            log("[LogoOverlay] show error: {}".format(
                 e), xbmc.LOGWARNING)
 
     def hide_permanent(self):
@@ -157,7 +159,7 @@ class SmartChannelsLogoOverlay:
                 win.cancel()
             except Exception:
                 pass
-        xbmc.log("[plugin.video.smartchannels] [LogoOverlay] cancelled",
+        log("[LogoOverlay] cancelled",
                  xbmc.LOGINFO)
 
 def load_settings():

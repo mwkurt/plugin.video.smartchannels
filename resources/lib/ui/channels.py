@@ -166,6 +166,16 @@ def run_edit_wizard(addon, manager, channel_id: str) -> bool:
     finally:
         xbmc.executebuiltin("Dialog.Close(busydialognocancel)")
 
+    if manager.edit_blocked(channel_id):
+        d.ok(addon.getLocalizedString(32000),
+             addon.getLocalizedString(32952).format(defn.get("name", "")))
+        return True
+
+    if manager.rebuild_failed(channel_id):
+        d.ok(addon.getLocalizedString(32000),
+             addon.getLocalizedString(32951).format(defn.get("name", "")))
+        return True
+
     _notify(addon, addon.getLocalizedString(32439).format(defn.get("name", "")))
     return True
 
@@ -394,6 +404,13 @@ def _combo_info_lines(addon, manager, ch, channel_id, lines):
                           else addon.getLocalizedString(32886))
                 lines.append("  {} — {} — {} — {}".format(
                     fstr, rand_s, rec_s, sil_s))
+            elif src == "file":
+                fp    = sl.get("file_path", "")
+                fname = (fp.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] if fp else "?")
+                sil_s = (addon.getLocalizedString(32885)
+                         if sl.get("silent", False)
+                         else addon.getLocalizedString(32886))
+                lines.append("  {} — {}".format(fname, sil_s))
             else:
                 fp    = sl.get("folder_path", "")
                 fname = (fp.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] if fp else "?")
@@ -618,6 +635,18 @@ def view_exclusions(addon, manager, channel_id: str) -> None:
             addon.getLocalizedString(32611))
 
 
+def missing_duration_label(addon, entry: dict) -> str:
+    """One line for a Missing Durations entry: show, episode and title, with
+    "(default length used)" added for an item that was queued with the default
+    length.  Used by the channel menu list and the side panel list."""
+    head = " — ".join(filter(None, [
+        entry.get("show", ""), entry.get("episode", ""),
+        entry.get("title", "")])) or entry.get("file", "")
+    if entry.get("reason") == "default_length":
+        head = "{} ({})".format(head, addon.getLocalizedString(32716))
+    return head
+
+
 def view_missing_durations(addon, manager, channel_id: str) -> None:
     """Show missing durations log for a channel."""
     missing = manager.get_missing_durations(channel_id)
@@ -629,9 +658,7 @@ def view_missing_durations(addon, manager, channel_id: str) -> None:
 
     lines = []
     for entry in missing:
-        head = " — ".join(filter(None, [
-            entry.get("show", ""), entry.get("episode", ""),
-            entry.get("title", "")])) or entry.get("file", "")
+        head = missing_duration_label(addon, entry)
         path = entry.get("file", "")
         lines.append(head)
         if path:
@@ -656,3 +683,9 @@ def confirm_reset(addon, channel_name: str) -> bool:
     return xbmcgui.Dialog().yesno(
         addon.getLocalizedString(32350),
         addon.getLocalizedString(32351).format(channel_name))
+
+
+def confirm_rebuild_keep_places(addon, channel_name: str) -> bool:
+    return xbmcgui.Dialog().yesno(
+        addon.getLocalizedString(32976),
+        addon.getLocalizedString(32977).format(channel_name))

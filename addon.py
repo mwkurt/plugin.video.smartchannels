@@ -174,6 +174,7 @@ def main():
         "edit_channel":              router.edit_channel,
         "delete_channel":            router.delete_channel,
         "reset_channel":             router.reset_channel,
+        "rebuild_keep_places":       router.rebuild_keep_places,
         "reset_next_episode":        router.reset_next_episode,
         "channel_info":              router.channel_info,
         "set_channel_icon":          router.set_channel_icon,
@@ -193,6 +194,7 @@ def main():
         "refresh_library":           router.refresh_library,
         "refresh_songs_cache":        router.refresh_songs_cache,
         "repair_queue_paths":        router.repair_queue_paths,
+        "pick_panel_channel":        router.pick_panel_channel,
 
         # Settings / misc
         "open_settings":             router.open_settings,

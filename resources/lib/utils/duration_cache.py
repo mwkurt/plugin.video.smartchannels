@@ -89,6 +89,42 @@ def get_duration(item: dict) -> int:
     return duration
 
 
+# A Kodi running time below this is taken to be a wrong unit or a placeholder.
+KODI_RUNTIME_MIN_SECONDS = 60
+
+
+def fallback_duration(item: dict, default_seconds: int = 0) -> tuple:
+    """
+    Duration to use when the NFO could not give one.
+
+    Returns (seconds, source).  In order:
+      1. the running time Kodi holds for the item (item["runtime"], seconds)
+         -> source "kodi_runtime"
+      2. default_seconds (the user's default length setting, already in
+         seconds), when it is above zero -> source "default_setting"
+      3. (0, "") - nothing usable; the caller skips the item as before.
+
+    Reads only the item dict and the argument; no Kodi calls.  Logs a line
+    when a fallback is used so the Kodi log shows which items had no NFO.
+    """
+    try:
+        runtime = int(float(item.get("runtime") or 0))
+    except (TypeError, ValueError):
+        runtime = 0
+    if runtime >= KODI_RUNTIME_MIN_SECONDS:
+        source, seconds = "kodi_runtime", runtime
+    elif default_seconds and default_seconds > 0:
+        source, seconds = "default_setting", int(default_seconds)
+    else:
+        return 0, ""
+    log("[duration_cache] Duration fallback: show=\"{}\" title=\"{}\" "
+        "file=\"{}\" seconds={} source={}".format(
+            item.get("showtitle", item.get("tvshowtitle", "")),
+            item.get("title", ""), item.get("file", ""), seconds, source),
+        xbmc.LOGWARNING)
+    return seconds, source
+
+
 def get_folder_duration(item: dict, default_seconds: int) -> tuple:
     """
     Return (duration, is_default) for a Folder channel item.

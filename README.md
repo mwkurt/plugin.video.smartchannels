@@ -15,7 +15,7 @@ Requires Kodi 21 (Omega) or newer. Video add-on, Python 3.
 - **Schedules:** drop special programming into a channel at a set day and time.
 - **Auto-Create:** build many channels at once, grouped by decade, genre or studio.
 - **Overlays:** Coming Up Next and a channel logo, with corner, size and timing settings.
-- **Several devices:** point every device at one shared folder so they use the same channels and queues.
+- **Several devices:** point every device at one shared folder so they use the same channels and queues. One device can be made the timing master so only it pops the carousel.
 - **Backup and restore** of all add-on data.
 
 ## Quick start

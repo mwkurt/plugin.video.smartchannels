@@ -33,6 +33,7 @@ refresh via queue file mtime change).
 from __future__ import annotations
 
 import os
+import time
 from urllib.parse import urlencode
 
 import xbmc
@@ -58,6 +59,7 @@ ACTION_NAV_BACK      = 92    # Back button / Backspace
 CTRL_CHANNEL_LIST  = 100
 CTRL_UPCOMING_LIST = 200
 CTRL_UPCOMING_HDR  = 300
+CTRL_CHANNEL_HDR   = 302   # "Channels:" heading above the channel list
 CTRL_RIGHT_GROUP   = 301
 
 # ---------------------------------------------------------------------------
@@ -67,6 +69,14 @@ _S_PLAY_CHANNEL = 32690   # "> Play"
 _S_UPCOMING     = 32691   # "Upcoming"
 _S_NO_ITEMS     = 32692   # "No items in queue"
 _S_SEP_EP       = 32693   # "S{0}E{1} — {2}"
+_S_CHANNELS_HDR = 32984   # "Channels:"
+_S_ROW_NEXT     = 32985   # "Next: {0}"
+_S_ROW_QUEUE    = 32986   # "{0} in queue"
+_S_ROW_EP       = 32987   # "S{0}E{1}"
+
+# The line under each channel name is filled from the queue files while the
+# panel opens; if that takes longer than this many seconds the rest stay blank.
+_ROW_LINE_BUDGET_S = 4.0
 
 # Context menu string IDs — reuse existing strings from channels.py
 _S_CTX_CHANNEL_INFO = 32415
@@ -117,6 +127,21 @@ def _resolve_skin_xml(addon_path):
     return fallback
 
 
+def _queue_item_kind(item, ch_type):
+    """Return "movie", "folder" or "episode" for one queue item.
+
+    The one place that decides what kind of item a queue entry is, so the
+    right pane and the line under each channel name agree.
+    """
+    is_movie = (item.get("is_movie") or (item.get("movieid") or -1) > 0
+                or ch_type == "movies")
+    if is_movie:
+        return "movie"
+    if ch_type == "folder" and not item.get("episodeid"):
+        return "folder"
+    return "episode"
+
+
 class SmartChannelsSidePanel(xbmcgui.WindowXML):
     """Two-pane channel browser. Instantiated by open_side_panel()."""
 
@@ -154,10 +179,21 @@ class SmartChannelsSidePanel(xbmcgui.WindowXML):
     def onInit(self):
         """Called by Kodi when the window is ready to render."""
         log("[SidePanel] onInit")
+        self.getControl(CTRL_CHANNEL_HDR).setLabel(self._s(_S_CHANNELS_HDR))
         self._channels = self._get_channels()
         self._populate_channel_list()
         if self._channels:
-            self._populate_panel(self._channels[0])
+            start = self._manager.get_panel_start_index(self._channels)
+            self._current_ch_idx = start
+            if start:
+                self.getControl(CTRL_CHANNEL_LIST).selectItem(start)
+            # Kodi tries to focus the list when the window opens, before it
+            # has any rows, and fails ("asked to focus, but it can't"); the
+            # first Enter then went nowhere until an arrow key gave it focus
+            # (3.1.168).  Ask again now that the list is filled.
+            self.setFocusId(CTRL_CHANNEL_LIST)
+            self._panel_focused = False
+            self._populate_panel(self._channels[start])
 
         self._start_queue_watcher()
 
@@ -270,6 +306,11 @@ class SmartChannelsSidePanel(xbmcgui.WindowXML):
                        if act not in ("play_channel", "reset_channel",
                                       "set_channel_icon", "move_channel_up",
                                       "move_channel_down")]
+        if ch.get("interleave") and channel_type in ("tv", "movies", "folder"):
+            reset_pos = next(i for i, o in enumerate(options)
+                             if o[1] == "reset_channel")
+            options.insert(reset_pos + 1,
+                           (self._s(32976), "rebuild_keep_places"))
         if channel_type not in ("audio", "party", "combo"):
             options.append((self._s(_S_CTX_ADD_SCHEDULE), "add_schedule"))
         if channel_type not in ("audio", "party", "serial", "combo"):
@@ -308,6 +349,29 @@ class SmartChannelsSidePanel(xbmcgui.WindowXML):
                     self._s(_S_ADDON_NAME),
                     self._s(32355).format(ch["name"]),
                     xbmcgui.NOTIFICATION_INFO, 2000)
+                self._refresh_panel(idx)
+
+        elif action_name == "rebuild_keep_places":
+            # Same action as the channel-list menu (router.rebuild_keep_places):
+            # the rebuild itself is ChannelManager.rebuild_keep_places.
+            holder = self._manager.channel_lock_holder(channel_id)
+            if holder:
+                xbmcgui.Dialog().ok(
+                    self._s(_S_ADDON_NAME),
+                    self._s(32949).format(
+                        holder.get("device_name") or self._s(32948)))
+                return
+            from resources.lib.ui.channels import confirm_rebuild_keep_places
+            if confirm_rebuild_keep_places(self._addon, ch["name"]):
+                if self._manager.rebuild_keep_places(channel_id):
+                    xbmcgui.Dialog().notification(
+                        self._s(_S_ADDON_NAME),
+                        self._s(32978).format(ch["name"]),
+                        xbmcgui.NOTIFICATION_INFO, 2000)
+                else:
+                    xbmcgui.Dialog().ok(
+                        self._s(_S_ADDON_NAME),
+                        self._s(32979).format(ch["name"]))
                 self._refresh_panel(idx)
 
         elif action_name in ("move_channel_up", "move_channel_down"):
@@ -462,17 +526,15 @@ class SmartChannelsSidePanel(xbmcgui.WindowXML):
         action_name = options[choice][1]
 
         if action_name == "reset_show":
-            ok = self._manager.reset_show_to_start(channel_id, int(show_id))
-            if ok:
-                xbmcgui.Dialog().notification(
-                    self._s(_S_ADDON_NAME),
-                    self._s(32355).format(
-                        item.get("tvshowtitle", "")),
-                    xbmcgui.NOTIFICATION_INFO, 2000)
-                self._refresh_panel(ch_idx)
-            else:
-                log("[SidePanel] reset_show_to_start returned False "
-                    "for show {} on channel {}".format(show_id, channel_id[:8]))
+            # Same path as the Kodi list's Reset Show: the router asks for
+            # confirmation and refuses when another device is playing the
+            # channel.  The pane refreshes itself when the queue file changes
+            # (queue watcher).  (3.1.158)
+            xbmc.executebuiltin("RunPlugin({})".format(
+                _url(action="reset_next_episode",
+                     channel_id=channel_id,
+                     show_id=int(show_id),
+                     show_title=item.get("tvshowtitle", ""))))
 
     # ── Pane refresh helpers ───────────────────────────────────────────────
 
@@ -500,12 +562,75 @@ class SmartChannelsSidePanel(xbmcgui.WindowXML):
     def _populate_channel_list(self):
         ctrl = self.getControl(CTRL_CHANNEL_LIST)
         ctrl.reset()
+        started = time.monotonic()
+        skipped = 0
         for ch in self._channels:
             li = xbmcgui.ListItem(
                 label=self._manager.get_channel_list_label(ch))
             li.setArt({"icon": self._manager.resolve_channel_icon(ch)})
+            if time.monotonic() - started <= _ROW_LINE_BUDGET_S:
+                li.setLabel2(self._row_line_for(ch))
+            else:
+                skipped += 1
             ctrl.addItem(li)
-        log("[SidePanel] channel list: {} channels".format(len(self._channels)))
+        log("[SidePanel] channel list: {} channels, lines in {:.2f}s, "
+            "{} left blank".format(len(self._channels),
+                                   time.monotonic() - started, skipped))
+
+    def _row_line_for(self, channel):
+        """The line under a channel name, read from its queue file.  Blank when
+        the queue cannot be read; the list must still open."""
+        try:
+            return self._channel_row_line(
+                channel, self._manager.get_channel_queue(channel["id"]))
+        except Exception as e:
+            log("[SidePanel] row line for '{}' failed: {}".format(
+                channel.get("name"), e))
+            return ""
+
+    def _channel_row_line(self, channel, queue):
+        """Text for the line under a channel name: what plays next and how many
+        items are queued, e.g. "Next: Bones · S3E4 · 42 in queue"."""
+        items = [i for i in (queue or []) if not i.get("_silent")]
+        if not items:
+            return self._s(_S_NO_ITEMS)
+        item    = items[0]
+        ch_type = channel.get("channel_type", "tv")
+        kind    = _queue_item_kind(item, ch_type)
+        if kind == "movie":
+            title = item.get("title", "")
+            year  = item.get("year", "")
+            what  = "{} ({})".format(title, year) if year else title
+        elif kind == "folder":
+            raw  = item.get("file", item.get("label", ""))
+            name = raw.rstrip("/").rstrip("\\").rsplit("/", 1)[-1]
+            what = os.path.splitext(name.rsplit("\\", 1)[-1])[0]
+        elif ch_type == "audio":
+            artist = item.get("artist", "")
+            what   = " - ".join(p for p in (artist, item.get("title", "")) if p)
+        else:
+            show = item.get("tvshowtitle", "")
+            what = self._s(_S_ROW_EP).format(
+                item.get("season", 0), item.get("episode", 0))
+            one_show = (len(channel.get("shows") or []) == 1
+                        or show.casefold() == channel.get("name", "").casefold())
+            if show and not one_show:
+                what = "{} \u00b7 {}".format(show, what)
+        return "{} \u00b7 {}".format(
+            self._s(_S_ROW_NEXT).format(what),
+            self._s(_S_ROW_QUEUE).format(len(items)))
+
+    def _update_row_line(self, channel, queue):
+        """Refresh the line under one channel after its queue has been read
+        again (queue watcher, channel change)."""
+        try:
+            for idx, ch in enumerate(self._channels):
+                if ch.get("id") == channel.get("id"):
+                    self.getControl(CTRL_CHANNEL_LIST).getListItem(idx).setLabel2(
+                        self._channel_row_line(channel, queue))
+                    return
+        except Exception as e:
+            log("[SidePanel] row line update failed: {}".format(e))
 
     def _populate_panel(self, channel):
         ctrl     = self.getControl(CTRL_UPCOMING_LIST)
@@ -521,6 +646,8 @@ class SmartChannelsSidePanel(xbmcgui.WindowXML):
             queue = self._manager.get_channel_queue(channel["id"])
         except Exception as e:
             log("[SidePanel] _populate_panel read error: {}".format(e))
+
+        self._update_row_line(channel, queue)
 
         try:
             n = max(1, min(int(
@@ -581,10 +708,9 @@ class SmartChannelsSidePanel(xbmcgui.WindowXML):
         movie_poster = movie_poster or {}
         duration_str = _fmt_dur(int(item.get("duration", 0) or 0))
 
-        is_movie  = (item.get("is_movie") or item.get("movieid", -1) > 0
-                     or ch_type == "movies")
-        is_folder = (ch_type == "folder" and not is_movie
-                     and not item.get("episodeid"))
+        kind      = _queue_item_kind(item, ch_type)
+        is_movie  = (kind == "movie")
+        is_folder = (kind == "folder")
 
         if is_movie:
             label  = item.get("title", "")
@@ -622,12 +748,11 @@ class SmartChannelsSidePanel(xbmcgui.WindowXML):
         missing = self._manager.get_missing_durations(channel_id)
         if not missing:
             return
+        from resources.lib.ui.channels import missing_duration_label
         items = []
         for m in missing:
-            label = " — ".join(filter(None, [
-                m.get("show", ""), m.get("episode", ""), m.get("title", "")])) \
-                or m.get("file", "")
-            items.append((label, m.get("file", "")))
+            items.append((missing_duration_label(self._addon, m),
+                          m.get("file", "")))
         clear_label = self._s(32711)
         labels = [i[0] for i in items] + [clear_label]
         choice = xbmcgui.Dialog().select(

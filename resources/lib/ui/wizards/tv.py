@@ -17,7 +17,8 @@ import xbmcgui
 from resources.lib.ui.dialogs import (
     build_episode_filters, build_episode_exclusions,
     build_filters, ask_queue_size, ask_visibility, ask_carousel,
-    ask_starting_episode)
+    ask_starting_episode, show_order_listing,
+    ask_extra_shows, ask_keep_change_episodes, keep_existing_show_order)
 
 
 def run(addon, manager, name: str, existing: dict | None) -> dict | None:
@@ -34,6 +35,7 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
         return None
 
     filters = list(existing_filters)
+    all_shows = list(show_pool)        # whole library, before any filter
 
     # Offer filter-by on large libraries
     if len(show_pool) > 20:
@@ -54,12 +56,22 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
                     d.ok(addon.getLocalizedString(32000),
                          addon.getLocalizedString(32212))
 
-    show_labels = [s["title"] for s in show_pool]
-    preselected = []
+    # Shows already on the channel stay in the list even when the filter no
+    # longer matches them (they were added by hand, or the filter was
+    # changed), so editing a filter-built channel never drops them.  The
+    # library order is kept.
+    ex_ids = {s["tvshowid"] for s in existing_shows}
     if existing_shows:
-        ex_ids      = {s["tvshowid"] for s in existing_shows}
-        preselected = [i for i, s in enumerate(show_pool)
-                       if s["tvshowid"] in ex_ids]
+        pool_ids = {s["tvshowid"] for s in show_pool}
+        if any(i not in pool_ids for i in ex_ids):
+            show_pool = [s for s in all_shows
+                         if s["tvshowid"] in pool_ids
+                         or s["tvshowid"] in ex_ids]
+    filter_narrowed = len(show_pool) < len(all_shows)
+
+    show_labels = [s["title"] for s in show_pool]
+    preselected = [i for i, s in enumerate(show_pool)
+                   if s["tvshowid"] in ex_ids]
 
     chosen = d.multiselect(
         addon.getLocalizedString(32450).format(len(show_pool)),
@@ -77,14 +89,20 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
         for i in chosen
     ]
 
+    # ---- Extra shows outside the filter --------------------------------------
+    # When the list was narrowed by a filter, shows that do not match it can
+    # still be added by hand (the channel keeps the filter for the others).
+    if filter_narrowed:
+        extra = ask_extra_shows(addon, d, all_shows, show_pool)
+        if extra is None:
+            return None
+        selected_shows += extra
+
     # Preserve existing per-show settings
     if existing and existing_shows:
         existing_map   = {s["tvshowid"]: s for s in existing_shows}
-        existing_order = {s["tvshowid"]: idx
-                          for idx, s in enumerate(existing_shows)}
-        max_idx        = len(existing_shows)
-        selected_shows.sort(
-            key=lambda s: existing_order.get(s["tvshowid"], max_idx))
+        selected_shows = keep_existing_show_order(selected_shows,
+                                                  existing_shows)
         for s in selected_shows:
             prev = existing_map.get(s["tvshowid"])
             if prev:
@@ -110,8 +128,8 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
         for s in selected_shows:
             s.pop("randomize", None)
 
-    # ---- Show rotation order (2+ shows, sequential) --------------------------
-    if not randomize and len(selected_shows) > 1:
+    # ---- Show rotation order (2+ shows; round-robin and random episodes) -----
+    if len(selected_shows) > 1:
         shows_changed = False
         change_notice = ""
         if existing and existing_shows:
@@ -151,10 +169,7 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
             # Shuffle loop
             while True:
                 random.shuffle(selected_shows)
-                new_order = "\n".join(
-                    "{}. {}".format(i + 1, s["title"])
-                    for i, s in enumerate(selected_shows))
-                d.ok(order_title, new_order[:300])
+                show_order_listing(d, order_title, selected_shows)
                 shuf = d.yesno(
                     order_title,
                     addon.getLocalizedString(32249),
@@ -179,10 +194,7 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
                         break
                     ordered.append(remaining[pick])
                     remaining.pop(pick)
-                summary = "\n".join(
-                    "{}. {}".format(i + 1, s["title"])
-                    for i, s in enumerate(ordered))
-                d.ok(addon.getLocalizedString(32247), summary)
+                show_order_listing(d, addon.getLocalizedString(32247), ordered)
                 confirm = d.yesno(
                     addon.getLocalizedString(32247),
                     addon.getLocalizedString(32249),
@@ -197,8 +209,16 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
     if len(selected_shows) > 1:
         any_nondefault = any(
             s.get("episodes_per_slot", 1) != 1 for s in selected_shows)
+        ask_for       = selected_shows     # shows that get a number box
+        keep_existing = False
         if any_nondefault:
-            do_eps = True
+            # Editing a channel that already has custom counts (3.1.151).
+            mode, ask_for = ask_keep_change_episodes(
+                addon, d, selected_shows, existing_shows)
+            if mode == "keep":
+                do_eps, keep_existing = False, True
+            else:
+                do_eps = True
         else:
             eps_entry = d.yesno(
                 addon.getLocalizedString(32276),            # Set Episodes Per Show?
@@ -209,7 +229,7 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
             do_eps = bool(eps_entry)
 
         if do_eps:
-            for show in selected_shows:
+            for show in ask_for:
                 cur_eps = int(show.get("episodes_per_slot", 1))
                 eps_str = d.input(
                     addon.getLocalizedString(32277).format(
@@ -220,7 +240,7 @@ def run(addon, manager, name: str, existing: dict | None) -> dict | None:
                     show["episodes_per_slot"] = max(1, int(eps_str or cur_eps))
                 except (ValueError, TypeError):
                     show["episodes_per_slot"] = cur_eps
-        else:
+        elif not keep_existing:
             for show in selected_shows:
                 show.pop("episodes_per_slot", None)
 

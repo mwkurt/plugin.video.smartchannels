@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import time
+
 import xbmcgui
 import xbmcplugin
 
@@ -24,7 +26,8 @@ from resources.lib.player           import SmartPlayer
 from resources.lib.ui.channels      import (run_create_wizard, run_edit_wizard,
                                             show_channel_info,
                                             view_exclusions, view_missing_durations,
-                                            confirm_delete, confirm_reset)
+                                            confirm_delete, confirm_reset,
+                                            confirm_rebuild_keep_places)
 from resources.lib.utils.channel_wait import note_waiting, stop_waiting
 from resources.lib.utils.logger     import log
 
@@ -114,7 +117,7 @@ class Router:
             open_url = "{}?action=open_channel&channel_id={}".format(
                 self.base_url, ch_id)
 
-            li.setInfo("video", {"title": ch_name})
+            li.getVideoInfoTag().setTitle(ch_name)
             li.setProperty("IsPlayable", "false")
 
             # Context menu — full set matching 2.x behaviour.
@@ -141,6 +144,10 @@ class Router:
             if not is_combo:
                 ctx.append((self.addon.getLocalizedString(32350),
                              _ctx("reset_channel")))
+            if (not is_combo and ch.get("interleave")
+                    and ch_type in ("tv", "movies", "folder")):
+                ctx.append((self.addon.getLocalizedString(32976),
+                             _ctx("rebuild_keep_places")))
             ctx.append((self.addon.getLocalizedString(32203),
                          _ctx("delete_channel")))
             if not is_combo:
@@ -173,7 +180,11 @@ class Router:
                 self.handle, open_url, li, isFolder=True)
 
         xbmcplugin.setContent(self.handle, "videos")
-        xbmcplugin.endOfDirectory(self.handle, succeeded=True)
+        # cacheToDisc=False: Kodi must not keep this list. With the copy kept,
+        # switching "Use side panel" back on showed the kept list and never
+        # ran list_channels again, so the setting was not read (3.1.166).
+        xbmcplugin.endOfDirectory(self.handle, succeeded=True,
+                                  cacheToDisc=False)
 
     # -------------------------------------------------------------------------
     # open_channel  (episode listing view)
@@ -183,7 +194,7 @@ class Router:
         """Display upcoming queue items for a channel.
 
         Called when the user focuses/enters a channel in the list.
-        Renders up to num_upcoming_programs items with full setInfo()
+        Renders up to num_upcoming_programs items with full video info tags
         metadata so skins can display them in the right panel.
         Silent items are filtered out — they are never shown here.
         spec §1.8, §18 (num_upcoming_programs, show_next_episode)
@@ -250,12 +261,11 @@ class Router:
                 label = "{}{}".format(
                     title, " ({})".format(year) if year else "")
                 li = xbmcgui.ListItem(label=label)
-                li.setInfo("video", {
-                    "title":     title,
-                    "year":      year,
-                    "plot":      item.get("plot", ""),
-                    "mediatype": "movie",
-                })
+                tag = li.getVideoInfoTag()
+                tag.setMediaType("movie")
+                tag.setTitle(title)
+                tag.setYear(int(year or 0))
+                tag.setPlot(item.get("plot", "") or "")
                 thumb = item.get("thumbnail", "") or item.get("thumb", "")
                 if thumb:
                     li.setArt({"thumb": thumb, "icon": thumb})
@@ -264,18 +274,19 @@ class Router:
                 artist = item.get("artist", "") or ""
                 label  = "{} — {}".format(artist, title) if artist else title
                 li = xbmcgui.ListItem(label=label)
-                li.setInfo("music", {
-                    "title":  title,
-                    "artist": artist,
-                    "album":  item.get("album", "") or "",
-                })
+                tag = li.getMusicInfoTag()
+                tag.setTitle(title)
+                tag.setArtist(artist)
+                tag.setAlbum(item.get("album", "") or "")
                 thumb = item.get("thumbnail", "") or item.get("thumb", "")
                 if thumb:
                     li.setArt({"thumb": thumb, "icon": thumb})
             elif item.get("is_folder_item"):
                 title = item.get("title", "")
                 li    = xbmcgui.ListItem(label=title)
-                li.setInfo("video", {"title": title, "mediatype": "video"})
+                tag = li.getVideoInfoTag()
+                tag.setMediaType("video")
+                tag.setTitle(title)
             else:
                 # TV episode
                 show  = item.get("tvshowtitle", "")
@@ -290,13 +301,12 @@ class Router:
                 else:
                     label = title
                 li = xbmcgui.ListItem(label=label)
-                li.setInfo("video", {
-                    "tvshowtitle": show,
-                    "title":       title,
-                    "season":      s,
-                    "episode":     e,
-                    "mediatype":   "episode",
-                })
+                tag = li.getVideoInfoTag()
+                tag.setMediaType("episode")
+                tag.setTvShowTitle(show)
+                tag.setTitle(title)
+                tag.setSeason(s)
+                tag.setEpisode(e)
                 thumb = item.get("thumbnail", "") or item.get("thumb", "")
                 if thumb:
                     li.setArt({"thumb": thumb, "icon": thumb})
@@ -471,6 +481,29 @@ class Router:
         if confirm_reset(self.addon, channel.get("name", channel_id)):
             self.manager.reset_channel(channel_id)
             xbmc.executebuiltin("Container.Refresh")
+
+    def rebuild_keep_places(self, params: dict) -> None:
+        """Rebuild a channel's queue so what is woven into it is up to date,
+        every show keeping its place, after confirmation."""
+        channel_id = params.get("channel_id", "")
+        channel    = self.manager.get_channel(channel_id)
+        if not channel:
+            return
+        if self._channel_change_blocked(channel_id):
+            return
+        name = channel.get("name", channel_id)
+        if not confirm_rebuild_keep_places(self.addon, name):
+            return
+        if self.manager.rebuild_keep_places(channel_id):
+            xbmcgui.Dialog().notification(
+                self.addon.getLocalizedString(32000),
+                self.addon.getLocalizedString(32978).format(name),
+                xbmcgui.NOTIFICATION_INFO, 2000)
+        else:
+            xbmcgui.Dialog().ok(
+                self.addon.getLocalizedString(32000),
+                self.addon.getLocalizedString(32979).format(name))
+        xbmc.executebuiltin("Container.Refresh")
 
     def move_channel_up(self, params: dict) -> None:
         """Move a channel one position up in the list."""
@@ -836,8 +869,72 @@ class Router:
             xbmcgui.NOTIFICATION_INFO, 4000)
 
     # -------------------------------------------------------------------------
+    # pick_panel_channel
+    # -------------------------------------------------------------------------
+
+    def pick_panel_channel(self, params: dict) -> None:
+        """Settings > Advanced button: choose the channel the side panel
+        list opens on when 'Channel list opens on' is 'A specific channel'."""
+        channels = self.manager.get_all_channels()
+        if not channels:
+            xbmcgui.Dialog().ok(self.addon.getLocalizedString(32000),
+                                self.addon.getLocalizedString(32996))
+            return
+        labels = [self.manager.get_channel_list_label(c) for c in channels]
+        choice = xbmcgui.Dialog().select(
+            self.addon.getLocalizedString(32995), labels)
+        if choice < 0:
+            return
+        self.manager.set_panel_start_channel(channels[choice]["id"])
+        self.addon.setSetting("panel_open_channel_name",
+                              channels[choice].get("name", ""))
+        xbmcgui.Dialog().notification(
+            self.addon.getLocalizedString(32000),
+            self.addon.getLocalizedString(32994).format(
+                channels[choice].get("name", "")),
+            xbmcgui.NOTIFICATION_INFO, 3000)
+
+    # -------------------------------------------------------------------------
     # backup_data / restore_data / delete_all_data
     # -------------------------------------------------------------------------
+
+    _BACKUP_COPY_ATTEMPTS = 3
+
+    @staticmethod
+    def _backup_copy_state(_vfs, tmp_zip, zip_path, started) -> str:
+        """What a refused backup copy looked like: size of the zip that was
+        being sent, whether the file is visible on the share and how big it
+        is there, and how long the tries have taken.  Evidence only."""
+        try:
+            sent = _vfs.Stat(tmp_zip).st_size()
+        except Exception:
+            sent = "?"
+        try:
+            there = _vfs.exists(zip_path)
+        except Exception:
+            there = "?"
+        try:
+            shared_size = _vfs.Stat(zip_path).st_size() if there is True else "-"
+        except Exception:
+            shared_size = "?"
+        return ("zip {} bytes; on the share: visible={}, {} bytes; {:.1f} s "
+                "since the first try".format(
+                    sent, there, shared_size, time.monotonic() - started))
+
+    @staticmethod
+    def _backup_saved_check(_vfs, tmp_zip, zip_path) -> str:
+        """The 'saved copy' evidence line written after a successful copy."""
+        try:
+            sent = _vfs.Stat(tmp_zip).st_size()
+            saved = _vfs.Stat(zip_path).st_size()
+        except Exception as exc:
+            return ("[Router] backup: could not read the size of the saved "
+                    "copy: {}".format(exc))
+        if sent == saved:
+            return ("[Router] backup: saved copy is {} bytes, the same as "
+                    "the zip that was sent".format(saved))
+        return ("[Router] backup: SIZE MISMATCH - the zip sent was {} bytes, "
+                "the file on the share is {} bytes".format(sent, saved))
 
     def backup_data(self, params: dict) -> None:
         import xbmcvfs as _vfs, os as _os, datetime, zipfile
@@ -854,15 +951,23 @@ class Router:
             if not backup_root:
                 return
 
+        from resources.lib.utils import journal as _journal
+        log("[Router] backup: started; backup folder {}; {}".format(
+            backup_root, _journal.playback_context()))
         profile = _vfs.translatePath(self.addon.getAddonInfo("profile"))
         shared  = _shared_root()
-        data_files = ["channels.json", "state.json",
-                      "local_library.json", "now_playing.json"]
+        data_files = ["channels.json", "state.json", "schedules.json",
+                      "local_library.json", "songs_cache.json",
+                      "now_playing.json"]
+        # Only the queues of channels that exist (a deleted channel's file
+        # can still be lying in the profile folder).
+        known_queues = set(self.manager.known_queue_filenames())
         for root in set(p for p in [profile, shared] if p):
             try:
                 _, files = _vfs.listdir(root)
                 for fn in files:
-                    if fn.startswith("queue_") and fn.endswith(".json"):
+                    if (fn.startswith("queue_") and fn.endswith(".json")
+                            and fn in known_queues):
                         data_files.append(fn)
             except Exception:
                 pass
@@ -888,6 +993,11 @@ class Router:
                                 self.addon.getLocalizedString(32365))
             return
 
+        # The draw journal of every device (last few days), so a backup
+        # carries the evidence of what happened since the previous one.
+        for arc_name, data in _journal.files_for_backup():
+            file_data[arc_name] = data
+
         ts       = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         zip_name = "SmartChannels_Backup_" + ts + ".zip"
         tmp_zip  = _os.path.join(
@@ -902,7 +1012,53 @@ class Router:
                     backup_root + "/"):
                 log("[Router] backup: could not create folder {}".format(
                     backup_root), xbmc.LOGWARNING)
-            ok = _vfs.copy(tmp_zip, zip_path)
+            # A copy to a network share can be refused for a moment (seen
+            # 10/29: two refused in a row, then fine).  Try up to three times,
+            # remove a partly written zip before each new try, and log what
+            # the destination looked like so a failure explains itself.
+            ok = False
+            started = time.monotonic()
+            for attempt in range(1, self._BACKUP_COPY_ATTEMPTS + 1):
+                if attempt > 1:
+                    xbmc.sleep(1500 * (attempt - 1))
+                    try:
+                        if _vfs.exists(zip_path):
+                            _vfs.delete(zip_path)
+                    except Exception:
+                        pass
+                ok = _vfs.copy(tmp_zip, zip_path)
+                if ok:
+                    if attempt > 1:
+                        log("[Router] backup: copy succeeded on attempt "
+                            "{}".format(attempt))
+                    break
+                try:
+                    folder_ok = _vfs.exists(backup_root + "/")
+                except Exception:
+                    folder_ok = "unknown"
+                log("[Router] backup: copy attempt {} of {} failed "
+                    "(backup folder reachable: {}) | {} | {}".format(
+                        attempt, self._BACKUP_COPY_ATTEMPTS, folder_ok,
+                        self._backup_copy_state(_vfs, tmp_zip, zip_path,
+                                                started),
+                        _journal.playback_context()),
+                    xbmc.LOGWARNING)
+            if not ok:
+                try:
+                    if _vfs.exists(zip_path):
+                        _vfs.delete(zip_path)    # never leave a partial zip
+                except Exception:
+                    pass
+            log("[Router] backup: {} file(s) {} to {}".format(
+                len(file_data), "copied" if ok else "NOT copied", zip_path))
+            if ok:
+                # Evidence only: the copy said it worked; does the file on the
+                # share have the size of the zip that was sent?  Never changes
+                # the result.
+                msg = self._backup_saved_check(_vfs, tmp_zip, zip_path)
+                log(msg, xbmc.LOGWARNING if ("MISMATCH" in msg
+                                             or "could not" in msg)
+                    else xbmc.LOGINFO)
             if not ok:
                 log("[Router] backup: copy of {} to {} failed".format(
                     tmp_zip, zip_path), xbmc.LOGERROR)
@@ -978,7 +1134,9 @@ class Router:
                                     self.addon.getLocalizedString(32374))
                 return
             zf        = zipfile.ZipFile(tmp_zip, "r")
-            available = zf.namelist()
+            from resources.lib.utils import journal as _journal
+            available = [n for n in zf.namelist()
+                         if not _journal.is_backup_entry(n)]
         except Exception as e:
             xbmcgui.Dialog().ok(self.addon.getLocalizedString(32362), str(e))
             return
@@ -1039,6 +1197,10 @@ class Router:
             _os.remove(tmp_zip)
         except Exception:
             pass
+        # A restore replaces state.json whole; the journal says so.  3.1.142
+        from resources.lib.utils import journal as _journal
+        _journal.record("restore", dev=self.manager.get_device_label(),
+                        restored=restored, failed=failed)
 
         parts = []
         if restored:
@@ -1057,41 +1219,30 @@ class Router:
 
     def delete_all_data(self, params: dict) -> None:
         import xbmcvfs as _vfs, os as _os
-        from resources.lib.utils.paths import shared_root as _shared_root
+        from resources.lib.utils.paths import (
+            shared_root as _shared_root, is_data_file as _is_data_file)
 
         if not xbmcgui.Dialog().yesno(
                 self.addon.getLocalizedString(32051),
                 self.addon.getLocalizedString(32384)):
             return
 
-        data_files = ["channels.json", "state.json",
-                      "local_library.json", "now_playing.json"]
-
         def _delete_from(folder, is_network):
             deleted = 0
-            for fn in data_files:
+            try:
+                _, files = _vfs.listdir(folder)
+            except Exception:
+                return 0
+            for fn in files:
+                if not _is_data_file(fn):
+                    continue
                 p = (folder + "/" + fn if is_network
                      else _os.path.join(folder, fn))
                 try:
-                    if _vfs.exists(p):
-                        _vfs.delete(p)
+                    if _vfs.exists(p) and _vfs.delete(p):
                         deleted += 1
                 except Exception:
                     pass
-            try:
-                _, files = _vfs.listdir(folder)
-                for fn in files:
-                    if fn.startswith("queue_") and fn.endswith(".json"):
-                        p = (folder + "/" + fn if is_network
-                             else _os.path.join(folder, fn))
-                        try:
-                            if _vfs.exists(p):
-                                _vfs.delete(p)
-                                deleted += 1
-                        except Exception:
-                            pass
-            except Exception:
-                pass
             return deleted
 
         profile = _vfs.translatePath(self.addon.getAddonInfo("profile"))
@@ -1099,6 +1250,9 @@ class Router:
         shared  = _shared_root()
         if shared:
             total += _delete_from(shared, "://" in shared)
+
+        from resources.lib.utils import journal as _journal
+        total += _journal.delete_all()
 
         xbmcgui.Dialog().notification(
             self.addon.getLocalizedString(32000),

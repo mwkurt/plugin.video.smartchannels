@@ -232,6 +232,13 @@ class FolderQueueBuilder(BaseQueueBuilder):
             "duration_is_default": is_default,
         }
 
+    def item_for_file(self, channel_id: str, file_path: str) -> dict:
+        """Return one queue item for a single media file (public form of
+        _make_item with the folder default duration).  Used by the Combo
+        Block single-file slot."""
+        return self._make_item(channel_id, file_path,
+                               self._default_duration())
+
     def _default_duration(self) -> int:
         try:
             return int(

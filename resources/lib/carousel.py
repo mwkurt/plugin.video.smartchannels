@@ -49,6 +49,7 @@ from typing import Optional
 
 import xbmc
 
+from resources.lib.utils import journal
 from resources.lib.utils.logger import log
 
 # Minimum carousel interval enforced by the wizard (minutes).
@@ -72,6 +73,16 @@ def tick_carousel(player) -> None:
     """
     manager = player._get_manager()
 
+    # Timing master (3.1.146): the configured device writes its heartbeat; a
+    # device that sees a live master only keeps the clock of its playing
+    # channel and does not pop.
+    manager.tick_master()
+    follower = manager.master_in_charge()
+
+    # Journal what this device can prove about the shared carousel clocks
+    # (logging only).  3.1.142
+    manager.watch_carousel_clocks()
+
     try:
         channels = manager.get_all_channels()
     except Exception as exc:
@@ -94,6 +105,10 @@ def tick_carousel(player) -> None:
         log("[carousel] tick_carousel: could not read schedules "
             "(source-channel guard skipped): {}".format(exc))
 
+    # Take each channel's clock from its own file (3.1.146).
+    manager.refresh_carousel_clocks(
+        [c["id"] for c in channels if c.get("carousel_enabled", False)])
+
     now = time.time()
     for channel in channels:
         if not channel.get("carousel_enabled", False):
@@ -106,9 +121,12 @@ def tick_carousel(player) -> None:
         channel_id = channel["id"]
 
         # Skip the channel currently playing — watching it IS the drift.
+        # Keep its clock at "now" so the time spent watching is never owed
+        # to the carousel when playback stops.  (3.1.113)
         if channel_id == player._channel_id:
             log("[carousel] '{}': skipping — currently playing".format(
                 channel.get("name", channel_id)), xbmc.LOGDEBUG)
+            _hold_clock_while_playing(manager, channel_id, now)
             continue
 
         # Skip a channel another device is playing — its owner is the only
@@ -124,12 +142,55 @@ def tick_carousel(player) -> None:
                 channel.get("name", channel_id)), xbmc.LOGDEBUG)
             continue
 
+        # Block expiry on: a scheduled block at the front leaves the queue by
+        # its time slot (scheduler.expire_blocks), not by the carousel.  The
+        # clock is held meanwhile so the block's time is not owed afterwards.
+        # (3.1.155)
+        if manager.block_expiry_enabled():
+            front = manager.get_channel_queue(channel_id)
+            if front and front[0].get("_schedule_id"):
+                log("[carousel] '{}': skipping - scheduled block at the "
+                    "front (block expiry on)".format(
+                        channel.get("name", channel_id)), xbmc.LOGDEBUG)
+                _hold_clock_while_playing(manager, channel_id, now)
+                continue
+
+        # A live timing master pops; this device does not.  (3.1.146)
+        if follower:
+            manager.note_follower_skip(channel_id)
+            continue
+
         try:
             _check_channel(player, manager, channel, channel_id, now)
         except Exception as exc:
             log("[carousel] tick_carousel: error on '{}': {}".format(
                 channel.get("name", channel_id), exc),
                 level=xbmc.LOGWARNING)
+
+
+# ---------------------------------------------------------------------------
+# Playing-channel clock hold
+# ---------------------------------------------------------------------------
+
+def _hold_clock_while_playing(manager, channel_id: str, now: float) -> None:
+    """Set the carousel clock of the playing channel to now.
+
+    A channel being played behaves like a channel without a carousel: nothing
+    accumulates while it plays.  Without this, last_pop_time stayed at the last
+    pop and, when playback stopped, the catch-up loop popped every item "owed"
+    for the hours spent watching.  Only time spent stopped counts.
+    A channel with no clock yet is left alone (the first-run guard sets it).
+    """
+    try:
+        cs = manager.get_carousel_state(channel_id)
+        if cs.get("last_pop_time") is None:
+            return
+        cs = dict(cs)
+        cs["last_pop_time"] = now
+        manager.set_carousel_state(channel_id, cs)
+    except Exception as exc:
+        log("[carousel] hold clock error on {}: {}".format(channel_id, exc),
+            level=xbmc.LOGWARNING)
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +256,7 @@ def _check_timed_mode(player, manager, channel: dict,
             elapsed, intervals_due, total_to_pop), xbmc.LOGDEBUG)
 
     _do_pops(player, manager, channel, channel_id, total_to_pop,
-             new_last_pop, "timed")
+             new_last_pop, "timed", based_on=last_pop)
 
 
 # ---------------------------------------------------------------------------
@@ -279,7 +340,7 @@ def _check_duration_mode(player, manager, channel: dict,
         channel.get("name", channel_id), total_to_pop))
 
     _do_pops(player, manager, channel, channel_id, total_to_pop,
-             new_last_pop, "duration")
+             new_last_pop, "duration", based_on=last_pop)
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +348,8 @@ def _check_duration_mode(player, manager, channel: dict,
 # ---------------------------------------------------------------------------
 
 def _do_pops(player, manager, channel: dict, channel_id: str,
-             count: int, new_last_pop: float, mode: str) -> None:
+             count: int, new_last_pop: float, mode: str,
+             based_on=None) -> None:
     """Pop ``count`` items from the queue front, one at a time.
 
     For each pop:
@@ -302,31 +364,48 @@ def _do_pops(player, manager, channel: dict, channel_id: str,
     ONE manager throughout — never call player._get_manager() again here.
     spec §9.1, §9.2
     """
-    # Multi-client guard: re-read carousel state before committing any writes.
-    # If last_pop_time has already reached new_last_pop, another client on
-    # shared storage handled this interval — nothing to do.
-    fresh_cs = manager.get_carousel_state(channel_id)
-    if fresh_cs.get("last_pop_time", 0) >= new_last_pop:
-        log("[carousel] '{}' [{}]: last_pop_time already at {:.0f} — "
-            "another client popped, skipping".format(
-                channel.get("name", channel_id), mode,
-                fresh_cs.get("last_pop_time", 0)))
+    # Multi-client guard: claim this pop on the shared file before any write.
+    # Another device on the shared folder may have just popped it or be
+    # popping it now; it then holds the claim and this device leaves it.
+    # (3.1.117: replaces the check of the in-memory state, which could not
+    # see a pop another device made after this manager loaded.)
+    # based_on: the clock value the due-check started from (3.1.142); the
+    # claim refuses when the shared clock has moved past it.
+    if not manager.claim_carousel_pop(channel_id, new_last_pop, based_on):
         return
 
+    popped_any = False
+    shown      = None
+    done       = 0          # pops completed in this batch
+    why        = ""         # why a batch ended short (journal 'pop_batch_short')
     for i in range(count):
         queue = manager.get_channel_queue(channel_id)
         if not queue:
             log("[carousel] '{}': queue empty after {} pop(s)".format(
                 channel.get("name", channel_id), i))
+            # A queue never runs out through use (every pop is replaced), so
+            # [] here means the file could not be read or is missing on the
+            # share.  Say which, for the journal.  (3.1.142)
+            again = manager.read_channel_queue(channel_id)
+            why = ("queue_unreadable" if again is None
+                   else "queue_read_ok_now" if again
+                   else "queue_missing_or_empty")
             break
 
         popped_item = queue.pop(0)
         title    = popped_item.get("title") or popped_item.get("tvshowtitle", "?")
         is_block = bool(popped_item.get("_schedule_id"))
 
-        log("[carousel] '{}' [{}]: popping item {} of {} -- '{}'{}" .format(
+        log("[carousel] '{}' [{}]: popping item {} of {} -- '{}'{} "
+            "(device {})".format(
             channel.get("name", channel_id), mode, i + 1, count, title,
-            " [scheduled block]" if is_block else ""))
+            " [scheduled block]" if is_block else "",
+            manager.get_device_label()))
+
+        journal.record("pop", ch=manager.journal_channel_name(channel_id),
+                       src="carousel:" + str(mode), n=i + 1, of=count,
+                       queue_after=len(queue),
+                       item=journal.item_summary(popped_item))
 
         # Clear saved resume position for the popped item.
         try:
@@ -353,6 +432,8 @@ def _do_pops(player, manager, channel: dict, channel_id: str,
             cs = manager.get_carousel_state(channel_id)
             cs["last_pop_time"] = new_last_pop
             manager.set_carousel_state(channel_id, cs)
+            popped_any = True
+            done += 1
             log("[carousel] '{}': block pop complete. queue depth now {}".format(
                 channel.get("name", channel_id), len(queue)), xbmc.LOGDEBUG)
             if player._channel_id == channel_id:
@@ -370,6 +451,7 @@ def _do_pops(player, manager, channel: dict, channel_id: str,
                 "aborting pop, queue unchanged".format(
                     channel.get("name", channel_id)),
                 level=xbmc.LOGWARNING)
+            why = "no_replacement"
             break
 
         # Write updated queue only after successful replacement.
@@ -381,6 +463,10 @@ def _do_pops(player, manager, channel: dict, channel_id: str,
         if last_popped_show is not None:
             cs["last_popped_show"] = last_popped_show
         manager.set_carousel_state(channel_id, cs)
+        popped_any = True
+        done += 1
+        if last_popped_show is not None:
+            shown = last_popped_show
 
         log("[carousel] '{}': pop complete. queue depth now {}".format(
             channel.get("name", channel_id), len(queue)), xbmc.LOGDEBUG)
@@ -388,6 +474,20 @@ def _do_pops(player, manager, channel: dict, channel_id: str,
         # Keep player's in-memory queue in sync if this is the active channel.
         if player._channel_id == channel_id:
             player._queue = queue
+
+    # A batch that ended before `count` pops (library briefly down, queue
+    # empty): the clock was already set to the end of the interval, so the
+    # missing pops are not made up later.  Journalled so the shortfall is
+    # visible in the evidence.  (3.1.142)
+    if done < count:
+        journal.record("pop_batch_short",
+                       ch=manager.journal_channel_name(channel_id),
+                       mode=mode, done=done, of=count, why=why or "?",
+                       clock_set=popped_any, target=new_last_pop)
+
+    # The clock was saved with the pops; check another device did not erase it.
+    if popped_any:
+        manager.verify_carousel_clock(channel_id, new_last_pop, shown)
 
 
 # ---------------------------------------------------------------------------
@@ -404,6 +504,7 @@ def _apply_replacement(manager, channel: dict, channel_id: str,
     spec §9.2
     """
     last_popped_show: Optional[int] = None
+    queue_before = len(queue)
     consumed_cid = (popped_item.get("_channel_id")
                     or popped_item.get("channel_id", ""))
 
@@ -417,8 +518,10 @@ def _apply_replacement(manager, channel: dict, channel_id: str,
             # Primary TV item — same-show carousel replacement (§8.5, §9.2).
             show_id = popped_item.get("show_id") or popped_item.get("_show_id")
             if show_id:
+                consumed_id = popped_item.get("episodeid")
                 replacement = manager.get_carousel_replacement(
-                    channel_id, int(show_id))
+                    channel_id, int(show_id), queue=queue,
+                    consumed_id=consumed_id)
                 if replacement:
                     # Skip if this episode is already in the queue — the
                     # initial build may have placed it there already.
@@ -430,7 +533,8 @@ def _apply_replacement(manager, channel: dict, channel_id: str,
                         log("[carousel] carousel_replacement: ep {} already "
                             "in queue — advancing one more".format(ep_id))
                         replacement = manager.get_carousel_replacement(
-                            channel_id, int(show_id))
+                            channel_id, int(show_id), queue=queue,
+                            consumed_id=consumed_id)
                     if replacement:
                         queue.append(replacement)
                         log("[carousel] carousel_replacement: appended next ep "
@@ -459,6 +563,11 @@ def _apply_replacement(manager, channel: dict, channel_id: str,
                     popped_item.get("title", "?")),
                     level=xbmc.LOGWARNING)
 
+    journal.record("append", ch=manager.journal_channel_name(channel_id),
+                   src="carousel",
+                   item=(journal.item_summary(queue[-1])
+                         if len(queue) > queue_before else None),
+                   queue_now=len(queue))
     return last_popped_show
 
 

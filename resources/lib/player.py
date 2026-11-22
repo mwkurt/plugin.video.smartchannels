@@ -22,6 +22,7 @@ import xbmc
 import xbmcgui
 import xbmcvfs
 
+from resources.lib.utils import journal
 from resources.lib.utils.logger import log
 
 
@@ -74,7 +75,8 @@ class SmartPlayer:
                 "({} items)".format(len(queue)))
         else:
             log("[player] start_channel: no queue on disk — building fresh")
-            queue = self.manager.build_channel_queue(channel)
+            queue = self.manager.build_channel_queue(channel,
+                                                     keep_places=True)
             if not queue:
                 log("[player] start_channel: empty queue for '{}' — "
                     "aborting".format(channel.get("name", channel_id)))
@@ -101,7 +103,16 @@ class SmartPlayer:
 
         log("[player] start_channel: playlist built with {} items, "
             "starting playback".format(len(queue)))
+        # The plugin process never ran journal.start(), so this line had no
+        # device name and went to a file of its own (3.1.142).
+        journal.set_device(self.manager.get_device_label())
+        journal.record("channel_start",
+                       ch=self.manager.journal_channel_name(channel["id"]),
+                       queue=[journal.item_summary(i) for i in queue[:12]],
+                       queue_len=len(queue),
+                       resume_s=seek_to)
         xbmc.Player().play(playlist)
+        self.manager.remember_last_channel(channel_id)
 
         # Store the seek target for service.py to execute in onAVStarted,
         # where seekTime() is guaranteed safe because Kodi has the file open.
@@ -236,14 +247,9 @@ def _make_listitem(item: dict) -> xbmcgui.ListItem:
             tag.setDuration(int(item.get("duration", 0) or 0))
             tag.setRating(float(item.get("rating",   0) or 0))
             tag.setTrack(int(item.get("track",    0) or 0))
-        except Exception:
-            li.setInfo("music", {
-                "title":    title,
-                "artist":   artist,
-                "album":    item.get("album", "") or "",
-                "year":     int(item.get("year",     0) or 0),
-                "duration": int(item.get("duration", 0) or 0),
-            })
+        except Exception as exc:
+            log("[player] music info tag failed: {}".format(exc),
+                xbmc.LOGWARNING)
         li.setProperty("IsPlayable", "true")
         return li
 
@@ -281,18 +287,9 @@ def _make_listitem(item: dict) -> xbmcgui.ListItem:
             tag.setSeason(int(item.get("season",  0) or 0))
             tag.setEpisode(int(item.get("episode", 0) or 0))
             tag.setDuration(int(item.get("duration", 0) or 0))
-    except Exception:
-        # Kodi version fallback
-        if is_movie:
-            li.setInfo("video", {"mediatype": "movie", "title": title})
-        else:
-            li.setInfo("video", {
-                "mediatype":   "episode",
-                "title":       title,
-                "tvshowtitle": item.get("tvshowtitle", ""),
-                "season":      int(item.get("season",  0) or 0),
-                "episode":     int(item.get("episode", 0) or 0),
-            })
+    except Exception as exc:
+        log("[player] video info tag failed: {}".format(exc),
+            xbmc.LOGWARNING)
 
     li.setProperty("IsPlayable", "true")
     return li

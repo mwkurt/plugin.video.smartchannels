@@ -23,6 +23,8 @@ import xbmc
 import xbmcaddon
 import xbmcvfs
 
+from resources.lib.utils.logger import log
+
 _ADDON_ID = "plugin.video.smartchannels"
 
 
@@ -101,14 +103,18 @@ def _dir_exists(path: str) -> bool:
     """
     Return True if the directory at *path* exists and is accessible.
 
-    xbmcvfs.exists() requires a trailing slash when checking SMB/NFS
-    directory paths — without it Kodi's VFS layer treats the path as a
-    file check and returns False even when the share is reachable.
-    Local paths are unaffected by the trailing slash.
+    xbmcvfs.exists() needs a trailing slash to check a directory: without
+    it Kodi's VFS layer treats the path as a file check and can return
+    False for a folder that is really there.  That holds for SMB/NFS paths
+    and for local ones, so both get the trailing separator.  Before 3.1.149
+    a local folder was checked without it, and a missing file in the add-on
+    profile was reported as "folder not reachable" once a minute.
     """
+    if not path:
+        return False
     if "://" in path:
         return xbmcvfs.exists(path.rstrip("/") + "/")
-    return xbmcvfs.exists(path)
+    return xbmcvfs.exists(path.rstrip("/\\") + os.sep)
 
 
 def resolve_path(filename: str) -> str:
@@ -126,8 +132,8 @@ def resolve_path(filename: str) -> str:
             try:
                 xbmcvfs.mkdirs(shared)
             except Exception as exc:
-                xbmc.log("[{}][paths] Cannot create shared dir {}: {}".format(
-                    _ADDON_ID, shared, exc), xbmc.LOGWARNING)
+                log("[paths] Cannot create shared dir {}: {}".format(
+                    shared, exc), xbmc.LOGWARNING)
         return path_join(shared, filename)
     return os.path.join(profile, filename)
 
@@ -138,6 +144,38 @@ class JsonReadError(Exception):
 
 _READ_ATTEMPTS = 3
 _READ_RETRY_MS = (150, 400)    # pause before the 2nd and 3rd attempt
+
+# (path, leftover length) pairs already reported, so a file that stays in this
+# state is logged once per Kodi session and not on every read.
+_LEFTOVER_LOGGED: set = set()
+
+
+def _parse_json_text(text: str, path: str):
+    """Parse *text* as JSON, ignoring leftover text after a complete value.
+
+    A write to a network share that is shorter than the file it replaces can
+    leave the tail of the old content behind: a complete, valid JSON object
+    followed by junk.  json.loads rejects that ("Extra data"); here the valid
+    object is used and the leftover is reported.  Anything else that does not
+    parse (empty, half-written, not JSON) still raises, so it is retried.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as exc:
+        if not exc.msg.startswith("Extra data"):
+            raise
+        body = text.lstrip()
+        obj, end = json.JSONDecoder().raw_decode(body)
+        if not isinstance(obj, (dict, list)):
+            raise
+        left = len(body) - end
+        if (path, left) not in _LEFTOVER_LOGGED:
+            _LEFTOVER_LOGGED.add((path, left))
+            log("[paths] {} has {} characters of leftover text "
+                     "after valid JSON - ignored; the next save rewrites "
+                     "the file".format(path, left),
+                     xbmc.LOGWARNING)
+        return obj
 
 
 def _parent_reachable(path: str) -> bool:
@@ -179,7 +217,7 @@ def load_json_strict(path: str, default):
             continue
         try:
             with xbmcvfs.File(path, "r") as f:
-                return json.loads(f.read())
+                return _parse_json_text(f.read(), path)
         except Exception as exc:
             last_error = str(exc)
     raise JsonReadError("{}: {}".format(path, last_error))
@@ -196,8 +234,8 @@ def load_json(path: str, default):
     try:
         return load_json_strict(path, default)
     except JsonReadError as exc:
-        xbmc.log("[{}][paths] load_json failed {}".format(
-            _ADDON_ID, exc), xbmc.LOGWARNING)
+        log("[paths] load_json failed {}".format(
+            exc), xbmc.LOGWARNING)
         return default
 
 
@@ -209,6 +247,44 @@ def _write_file(path: str, text: str) -> bool:
     """Write *text* to *path* via xbmcvfs.File.  True on success."""
     with xbmcvfs.File(path, "w") as f:
         return f.write(text) is not False
+
+
+def _reads_back(path: str) -> bool:
+    """True when *path* now holds a complete JSON document (strict: leftover
+    text after the document counts as bad).  Read twice, 150 ms apart, so a
+    moment when another device is replacing the file is not mistaken for a
+    bad write."""
+    for attempt in range(2):
+        if attempt:
+            xbmc.sleep(150)
+        try:
+            with xbmcvfs.File(path, "r") as f:
+                json.loads(f.read())
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _verify_shared_write(local_copy: str, path: str) -> bool:
+    """Check the file just copied to a network share and repair a bad write.
+
+    A copy over an existing file on a share can fail to cut the old content
+    (the share refuses the delete or truncate while the file is busy), leaving
+    leftover text after the new content.  If the file does not read back as
+    valid JSON it is deleted and copied again.  Returns True when it reads
+    back, False when it still does not (the caller retries).
+    """
+    if _reads_back(path):
+        return True
+    log("[paths] {} did not read back as valid JSON after the write "
+             "- deleting it and writing it again".format(path),
+             xbmc.LOGWARNING)
+    try:
+        xbmcvfs.delete(path)
+    except Exception:
+        pass
+    return bool(xbmcvfs.copy(local_copy, path)) and _reads_back(path)
 
 
 def _write_shared(local_copy: str, path: str) -> bool:
@@ -231,7 +307,9 @@ def save_json(path: str, data) -> bool:
 
     Local profile paths: written directly via xbmcvfs.File.
     Shared / network paths: written to a local temp copy first, then
-    copied to the destination.
+    copied to the destination.  A .json file copied to a share is read back
+    and, if it is not valid JSON (an old tail left behind), deleted and
+    copied again.
 
     A failed write is retried (up to 3 attempts, short pauses) because a
     network share can refuse a write for a moment.  Returns True only when a
@@ -251,22 +329,86 @@ def save_json(path: str, data) -> bool:
             if is_shared:
                 ok = (_write_file(local_copy, json_str)
                       and _write_shared(local_copy, path))
+                if ok and path.endswith(".json"):
+                    ok = _verify_shared_write(local_copy, path)
             else:
                 ok = _write_file(path, json_str)
         except Exception as exc:
             ok = False
-            xbmc.log("[{}][paths] save_json attempt {} failed {}: {}".format(
-                _ADDON_ID, attempt + 1, path, exc), xbmc.LOGWARNING)
+            log("[paths] save_json attempt {} failed {}: {}".format(
+                attempt + 1, path, exc), xbmc.LOGWARNING)
         if ok:
             if attempt:
-                xbmc.log("[{}][paths] save_json succeeded on attempt {} for "
-                         "{}".format(_ADDON_ID, attempt + 1, path),
+                log("[paths] save_json succeeded on attempt {} for "
+                         "{}".format(attempt + 1, path),
                          xbmc.LOGINFO)
             return True
 
-    xbmc.log("[{}][paths] save_json failed after {} attempts, write lost: "
-             "{}".format(_ADDON_ID, _WRITE_ATTEMPTS, path), xbmc.LOGERROR)
+    log("[paths] save_json failed after {} attempts, write lost: "
+             "{}".format(_WRITE_ATTEMPTS, path), xbmc.LOGERROR)
     return False
+
+
+def remove_local_copy(filename: str) -> bool:
+    """Delete the local working copy (and any .tmp) of a shared data file.
+
+    save_json writes a shared file through a copy of the same name in the
+    local profile folder and leaves that copy behind.  Only used when shared
+    storage is active; with no shared storage the profile file IS the data
+    file and is never touched here.  True when a copy was removed.
+    """
+    if not shared_root():
+        return False
+    name = os.path.basename(filename)
+    if not name:
+        return False
+    removed = False
+    for suffix in ("", ".tmp"):
+        path = os.path.join(_get_profile(), name + suffix)
+        try:
+            if xbmcvfs.exists(path) and xbmcvfs.delete(path):
+                removed = True
+        except Exception as exc:
+            log("[paths] remove_local_copy failed {}: {}".format(
+                path, exc), xbmc.LOGWARNING)
+    return removed
+
+
+def local_queue_files() -> list:
+    """Basenames of queue_*.json files in the local profile folder, or an
+    empty list when shared storage is not in use (then they are the data)."""
+    if not shared_root():
+        return []
+    try:
+        _, files = xbmcvfs.listdir(_get_profile())
+    except Exception as exc:
+        log("[paths] local_queue_files listdir failed: {}".format(
+            exc), xbmc.LOGWARNING)
+        return []
+    return [f for f in files if f.startswith("queue_") and f.endswith(".json")]
+
+
+def channel_lock_files() -> list:
+    """Full paths of every channel_lock_<id>.json in the local profile folder
+    and in the shared folder.  channel_lock_owned.json (this device's own
+    record of the channel it holds) is not a channel lock and is left out."""
+    roots = [_get_profile()]
+    shared = shared_root()
+    if shared:
+        roots.append(shared)
+    found = []
+    for root in roots:
+        try:
+            _, files = xbmcvfs.listdir(root)
+        except Exception as exc:
+            log("[paths] channel_lock_files listdir failed: {}".format(
+                exc), xbmc.LOGWARNING)
+            continue
+        for name in files:
+            if (name.startswith("channel_lock_") and name.endswith(".json")
+                    and name != "channel_lock_owned.json"):
+                found.append(path_join(root, name))
+    return found
 
 
 def _s(addon: xbmcaddon.Addon, string_id: int, fallback: str = "") -> str:
@@ -293,6 +435,22 @@ _SHARED_DATA_FILES = [
 ]
 
 
+# Files the add-on writes whose names are not fixed: queues, saved copies of
+# the state, kept cursors and channel locks.
+_DATA_FILE_PREFIXES = ("queue_", "cursor_kept_", "state.bak", "state.day",
+                       "channel_lock_", "chanstate_")
+
+
+def is_data_file(name: str) -> bool:
+    """True when *name* is a data file the add-on created (not a setting and
+    not this device's id).  Used by Delete All Addon Data."""
+    if name.endswith(".tmp"):
+        name = name[:-4]
+    if name in _SHARED_DATA_FILES:
+        return True
+    return name.endswith(".json") and name.startswith(_DATA_FILE_PREFIXES)
+
+
 def _list_files_in_root(root: str) -> list:
     """Return basenames of all SmartChannels data files present in *root*."""
     found = []
@@ -305,11 +463,12 @@ def _list_files_in_root(root: str) -> list:
     try:
         _, files = xbmcvfs.listdir(root)
         for fname in files:
-            if fname.startswith("queue_") and fname.endswith(".json"):
+            if fname.endswith(".json") and fname.startswith(
+                    ("queue_", "chanstate_")):
                 found.append(fname)
     except Exception as exc:
-        xbmc.log("[{}][paths] _list_files_in_root listdir failed {}: {}".format(
-            _ADDON_ID, root, exc), xbmc.LOGWARNING)
+        log("[paths] _list_files_in_root listdir failed {}: {}".format(
+            root, exc), xbmc.LOGWARNING)
     return found
 
 
@@ -332,16 +491,16 @@ def migrate_storage_path(old_root: str, new_root: str) -> tuple:
             ok = xbmcvfs.copy(src, dst)
             if ok:
                 copied += 1
-                xbmc.log("[{}][paths] migrate: copied {} → {}".format(
-                    _ADDON_ID, fname, new_root))
+                log("[paths] migrate: copied {} → {}".format(
+                    fname, new_root), xbmc.LOGDEBUG)
             else:
                 failed += 1
-                xbmc.log("[{}][paths] migrate: copy failed {} → {}".format(
-                    _ADDON_ID, fname, dst), xbmc.LOGWARNING)
+                log("[paths] migrate: copy failed {} → {}".format(
+                    fname, dst), xbmc.LOGWARNING)
         except Exception as exc:
             failed += 1
-            xbmc.log("[{}][paths] migrate: exception copying {}: {}".format(
-                _ADDON_ID, fname, exc), xbmc.LOGERROR)
+            log("[paths] migrate: exception copying {}: {}".format(
+                fname, exc), xbmc.LOGERROR)
     return copied, failed
 
 
@@ -353,8 +512,8 @@ def delete_files_in_root(root: str, filenames: list) -> None:
         try:
             if xbmcvfs.exists(path):
                 xbmcvfs.delete(path)
-                xbmc.log("[{}][paths] migrate: deleted old file {}".format(
-                    _ADDON_ID, path))
+                log("[paths] migrate: deleted old file {}".format(
+                    path), xbmc.LOGDEBUG)
         except Exception as exc:
-            xbmc.log("[{}][paths] migrate: delete failed {}: {}".format(
-                _ADDON_ID, path, exc), xbmc.LOGWARNING)
+            log("[paths] migrate: delete failed {}: {}".format(
+                path, exc), xbmc.LOGWARNING)

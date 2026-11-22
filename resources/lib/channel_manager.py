@@ -19,9 +19,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import os
 import random
+import sys
 import threading
 import time
 import uuid
@@ -32,11 +34,14 @@ import xbmcaddon
 import xbmcvfs
 
 from resources.lib.library      import LibraryClient
+from resources.lib.utils import journal, write_lock
 from resources.lib.utils.logger import log
 from resources.lib.utils.paths  import (load_json, load_json_strict,
                                         JsonReadError, save_json,
                                         resolve_path, shared_root,
-                                        normalize_share_path, path_join)
+                                        normalize_share_path, path_join,
+                                        remove_local_copy, local_queue_files,
+                                        channel_lock_files)
 from resources.lib.channels.interleave import (
     plan_primary_count  as plan_interleave_primaries,
     tv_slot_takes_turns,
@@ -67,6 +72,10 @@ class ChannelManager:
     # this device's clock (either direction) counts as dead.  Failing open on
     # a wrong clock means "no lock", which is the pre-3.1.109 behaviour.
     LOCK_STALE_SECONDS = 180
+    # A lock file this old is a leftover (the owner was closed without
+    # releasing it) and is swept.  Much longer than LOCK_STALE_SECONDS so
+    # clock differences between devices can never remove a live lock.
+    LOCK_SWEEP_SECONDS = 3600
 
     # Zero cursor — used for fresh builds and as a safe default.
     # Keys: show_slot (int), ep_pos (dict), ep_played (dict), slot_owed (dict).
@@ -86,12 +95,104 @@ class ChannelManager:
     # (service threads and the carousel all save state).
     _STATE_LOCK = threading.RLock()
 
+    # The rename lock on the shared folder (3.1.148, utils/write_lock.py).
+    # One per process; rebuilt when the folder, the setting or the device
+    # changes.  Waits are short: a busy lock means "write anyway", never
+    # "freeze playback".
+    _WRITE_LOCK     = None
+    _WRITE_LOCK_KEY = None
+    _WRITE_LOCK_MU  = threading.Lock()
+    WRITE_LOCK_WAIT_MS       = 2000   # state.json saves and carousel writes
+    WRITE_LOCK_CLAIM_WAIT_MS = 2000   # the check-and-write part of a claim
+
     # state.json snapshots: one is written at most every STATE_BACKUP_SECONDS,
     # into one of STATE_BACKUP_SLOTS files used in turn, so the last
     # SLOTS x SECONDS (24 hours) of good state stay on the share.
     STATE_BACKUP_SECONDS = 10800
     STATE_BACKUP_SLOTS   = 8
     _state_backup_at     = 0.0
+
+    # One more snapshot per day, state.day<N>.json, N cycling through
+    # STATE_DAILY_SLOTS days, so a loss that is noticed late can still be
+    # recovered from.  Written by the first clean save of each day.
+    STATE_DAILY_SLOTS = 14
+    _state_daily_on   = -1
+
+    # Evidence for the journal (3.1.142): what this process last knew about
+    # the shared carousel clocks and about state.json itself.  Process-wide,
+    # like the backup clocks above.  Logging only: nothing here changes what
+    # is read, written or decided.
+    _clock_seen      = {}      # "<chan>:carousel" -> [clock, who, wall time]
+    _clock_regressed = {}      # "<chan>:carousel" -> lower clock already reported
+    _behind_noted    = set()   # (key, clock) pairs of memory_behind already reported
+    _stamp_seen      = None    # [mtime, size] of state.json, newest known here
+    _stale_count     = 0
+    _write_seq       = 0
+    _clk_logged      = None    # clock table of the last state_write line
+    _watch_wall      = 0.0
+    _watch_mono      = 0.0
+    _table_at        = 0.0
+    _unreadable_at   = 0.0
+
+    # Timing master (3.1.146).  Process-wide because the service makes a
+    # fresh ChannelManager for every call.  Keyed by this device's id so that
+    # several devices in one test process stay apart.
+    _master_obs      = {}      # device id -> what it saw of the master's file
+    _won_at          = {}      # channel id -> time of this process's last won claim (3.1.147)
+    _last_clock      = {}      # channel id -> carousel clock this process last read from the channel's file or wrote (3.1.147)
+    _queue_stamps    = {}      # channel id -> [mtime, size] of its queue file at the last clock write (3.1.147)
+    _master_beat     = {}      # device id -> wall time of its last heartbeat
+    _skips           = {}      # follower_skip counter (since, per channel)
+    _conflict_logged = set()   # (device id, other master id) already journalled
+
+    # Skipped items (no duration) are written down in batches: a pass that
+    # skips hundreds of items must not rewrite state.json and
+    # missing_durations.txt once per item.  Each file is recorded once per
+    # Kodi session.  An entry is written at once when nothing was written in
+    # the last MISSING_FLUSH_SECONDS (a single skip is not delayed); entries
+    # arriving faster than that wait and are written together when
+    # MISSING_FLUSH_MAX are waiting, or by a timer MISSING_FLUSH_SECONDS later.
+    MISSING_FLUSH_MAX     = 50
+    MISSING_FLUSH_SECONDS = 15
+    _missing_flushed_at   = 0.0
+    _MISSING_LOCK    = threading.Lock()
+    _missing_seen: set  = set()      # (channel_id, file) recorded this session
+    _missing_pending: dict = {}      # channel_id -> [entry, ...]
+    _missing_lines: list   = []      # missing_durations.txt lines waiting
+    _missing_timer         = None
+
+    # Channels whose last queue rebuild was refused because the new positions
+    # could not be saved (state.json unreadable).  The edit screens read this
+    # through rebuild_failed() to tell the user.
+    _rebuild_failed: set = set()
+
+    # Channels whose last Edit was refused, with nothing saved, because the
+    # channel's queue could not be read (another device was writing it).
+    # The edit screens read this through edit_blocked().
+    _edit_blocked: set = set()
+
+    # A state.json that is missing while channels exist is a failed read for
+    # this many seconds (another device is replacing the file), then it is
+    # taken as really gone.  _absent_since: path -> when it was first seen
+    # missing in this Kodi session.
+    STATE_ABSENT_GRACE = 120
+
+    # Wait before the episode list is fetched again when a position is past
+    # its end (see _next_candidate_ep).
+    WRAP_RECHECK_MS = 500
+    # Shows that wrapped back to their first episode a moment ago, as
+    # {(channel_id, show_id): time}.  _guard_cursors reads it so a wrap is not
+    # reported as a lost position.  Shared by all instances in this process.
+    _RECENT_WRAPS: dict = {}
+    WRAP_NOTE_SECONDS = 120
+    _absent_since: dict = {}
+
+    # A saved cursor that lost at least this share of its shows, or of its
+    # accumulated positions, is logged and the cursor it replaced is kept in
+    # cursor_kept_<channel>.json (the last CURSOR_KEPT_MAX replaced cursors).
+    CURSOR_SHRINK_RATIO = 0.5
+    CURSOR_SHRINK_MIN   = 20
+    CURSOR_KEPT_MAX     = 5
 
     def __init__(self, addon: xbmcaddon.Addon):
         self.addon   = addon
@@ -120,7 +221,12 @@ class ChannelManager:
         self._channels, self._channels_ok = self._read_strict(
             self._channels_path, [])
         self._state,    self._state_ok    = self._read_strict(
-            self._state_path, {})
+            self._state_path, {},
+            expected=bool(self._channels) or not self._channels_ok)
+        # The state as last read or written.  A save writes only the keys
+        # that differ from it, so a manager that has been open for a while
+        # cannot put its old copy of another channel's positions back.
+        self._state_base = copy.deepcopy(self._state)
         log("[ChannelManager] Loaded {} channel(s)".format(len(self._channels)),
             xbmc.LOGDEBUG)
 
@@ -131,6 +237,9 @@ class ChannelManager:
         # TV show was up to in its host's queue.  Held only while a host
         # rebuilds (begin/end_interleave_resume).
         self._interleave_resume: dict = {}
+        # Combo Block shows to continue at their place during one rebuild
+        # (rebuild_keep_places): {tv_next_ep state key: episode id}.
+        self._combo_resume: dict = {}
 
         self.library = LibraryClient(addon)
 
@@ -165,10 +274,40 @@ class ChannelManager:
     def _save_json(self, path: str, data: Any) -> None:
         save_json(path, data)
 
-    def _read_strict(self, path: str, default: Any) -> tuple:
-        """Return (data, True), or (default, False) if the file is unreadable."""
+    def _read_strict(self, path: str, default: Any,
+                     expected: bool = False) -> tuple:
+        """Return (data, True), or (default, False) if the file is unreadable.
+
+        expected=True means the file is known to exist (channels exist, so
+        the add-on has run here).  A file that is missing then counts as a
+        failed read, not an empty one: another device may be replacing it at
+        this very moment, and reading it as empty would send every show back
+        to its first episode.  It is looked for again after a short wait; if
+        it stays missing for STATE_ABSENT_GRACE seconds it is taken as gone.
+        """
         try:
-            return load_json_strict(path, default), True
+            data = load_json_strict(path, None if expected else default)
+            if expected and data is None:
+                for pause in (300, 700):
+                    xbmc.sleep(pause)
+                    data = load_json_strict(path, None)
+                    if data is not None:
+                        break
+            if expected and data is None:
+                now   = time.time()
+                since = ChannelManager._absent_since.setdefault(path, now)
+                if now - since < self.STATE_ABSENT_GRACE:
+                    log("[ChannelManager] {} is missing - treated as "
+                        "unreadable (writes to it are held back) until it "
+                        "is back".format(path), level=xbmc.LOGWARNING)
+                    return default, False
+                ChannelManager._absent_since.pop(path, None)
+                log("[ChannelManager] {} has been missing for {}s - treated "
+                    "as gone".format(path, int(now - since)),
+                    level=xbmc.LOGWARNING)
+                return default, True
+            ChannelManager._absent_since.pop(path, None)
+            return data, True
         except JsonReadError as exc:
             log("[ChannelManager] cannot read {} - writes to it are held "
                 "back until it can be read".format(exc), level=xbmc.LOGWARNING)
@@ -185,10 +324,13 @@ class ChannelManager:
         """
         if self._state_ok:
             return True
-        data, ok = self._read_strict(self._state_path, {})
+        data, ok = self._read_strict(
+            self._state_path, {},
+            expected=bool(self._channels) or not self._channels_ok)
         if ok:
-            self._state    = {**data, **self._state}
-            self._state_ok = True
+            self._state      = {**data, **self._state}
+            self._state_base = copy.deepcopy(data)
+            self._state_ok   = True
         return ok
 
     def _save_channels(self) -> None:
@@ -202,8 +344,39 @@ class ChannelManager:
             return
         self._save_json(self._channels_path, self._channels)
 
-    def _save_state(self) -> None:
-        """Read-before-write merge for state.json.
+    def _lock_scope(self, wait_ms: int):
+        """Context manager: hold the shared-folder rename lock for the block.
+        Yields True when held, False when the block runs without it (setting
+        off, no shared folder, lock busy too long, any error).  Never raises."""
+        try:
+            cls  = ChannelManager
+            root = self._shared_root()
+            on   = str(self.addon.getSetting("write_lock")
+                       ).strip().lower() != "false"
+            dev  = self.get_device_label()
+            key  = (root, on, self.get_device_id())   # label can change at start-up
+            with cls._WRITE_LOCK_MU:
+                if cls._WRITE_LOCK is None or cls._WRITE_LOCK_KEY != key:
+                    cls._WRITE_LOCK = write_lock.WriteLock(
+                        write_lock.default_fs(), root, dev, enabled=on,
+                        record=self._jrec)
+                    cls._WRITE_LOCK_KEY = key
+                lock = cls._WRITE_LOCK
+            return lock.scope(wait_ms)
+        except Exception as exc:
+            log("[ChannelManager] write lock unavailable: {}".format(exc),
+                level=xbmc.LOGWARNING)
+            return contextlib.nullcontext(False)
+
+    def _save_state(self) -> bool:
+        """Write state.json under the shared-folder lock (3.1.148); see
+        _save_state_unlocked for what a save does."""
+        with self._lock_scope(self.WRITE_LOCK_WAIT_MS):
+            return self._save_state_unlocked()
+
+    def _save_state_unlocked(self) -> bool:
+        """Read-before-write merge for state.json.  True when state.json was
+        written, False when the save was skipped or failed.
 
         Reads current file from disk, merges our in-memory changes on top,
         strips explicitly deleted keys, strips orphan keys (channels that no
@@ -221,11 +394,32 @@ class ChannelManager:
                 except JsonReadError as exc:
                     log("[ChannelManager] _save_state skipped, state.json "
                         "unreadable: {}".format(exc), level=xbmc.LOGWARNING)
-                    return
+                    self._journal_unreadable("save", exc)
+                    return False
+                via, stamp_read = self._diag_before_save(on_disk)
                 self._backup_state(on_disk)
-                merged  = {**on_disk, **self._state}
+                # Only what this manager changed since it last read or wrote
+                # state.json goes on top of the file as it is now.  Writing
+                # its whole copy would put every other channel's positions
+                # back to where they were when this manager was created.
+                if on_disk:
+                    merged = dict(on_disk)
+                    for k, v in self._state.items():
+                        if (k not in self._state_base
+                                or self._state_base[k] != v):
+                            merged[k] = v
+                else:
+                    # The file is gone or empty: write everything this
+                    # manager holds rather than only what it changed.
+                    merged = dict(self._state)
+                if self._deleted_state_keys:
+                    self._jrec("state_keys_deleted",
+                               n=len(self._deleted_state_keys), via=via,
+                               keys=sorted(self._deleted_state_keys)[:20])
                 for k in self._deleted_state_keys:
                     merged.pop(k, None)
+                self._keep_newer_carousel(on_disk, merged)
+                self._guard_cursors(on_disk, merged)
                 # Orphan-key pruning: drop keys for deleted channels.
                 # Exemptions: keys starting with "resume:" or "combo:" are
                 # managed independently and must not be pruned here.
@@ -249,35 +443,248 @@ class ChannelManager:
                         and not k.startswith("sch_")   # schedule active_block
                         and k.split(":", 1)[0] not in live_ids
                     ]
+                    if orphans:
+                        self._jrec("orphans_pruned", n=len(orphans), via=via,
+                                   channels=len(disk_channels),
+                                   keys=sorted(orphans)[:20])
                     for k in orphans:
                         del merged[k]
                 else:
                     log("[ChannelManager] _save_state: channel list empty or "
                         "unreadable - orphan pruning skipped",
                         level=xbmc.LOGWARNING)
-                self._save_json(self._state_path, merged)
-                self._state = merged
+                self._journal_lowering(merged, stamp_read, via)
+                self._keep_seen_clock(
+                    merged, via,
+                    {c["id"] for c in disk_channels} if disk_channels
+                    else None)
+                merged["_writer"] = self._writer_tag(via)
+                if not save_json(self._state_path, merged):
+                    log("[ChannelManager] _save_state: state.json could not "
+                        "be written", level=xbmc.LOGWARNING)
+                    self._jrec("state_write_failed", via=via, read=stamp_read)
+                    return False
+                self._state      = merged
+                self._state_base = copy.deepcopy(merged)
+                # The deletions are on disk now; a key deleted here and
+                # written by another device later must not be removed again.
+                self._deleted_state_keys.clear()
+                self._journal_write(merged, stamp_read, via)
+                return True
             except Exception as exc:
                 log("[ChannelManager] _save_state error: {}".format(exc),
                     level=xbmc.LOGWARNING)
+                return False
+
+    def _keep_newer_carousel(self, on_disk: dict, merged: dict) -> None:
+        """A save never lowers a channel's carousel clock.  (3.1.142)
+
+        _save_state puts this manager's changed keys on top of the file as it
+        is now.  A carousel entry is written whole, so a manager holding an
+        older copy (read before another device popped) wrote the old
+        last_pop_time back over the new one without any error: seen 7 times
+        in the night of 11/02 to 11/03, twice followed by a second pop for
+        the same interval.  Every clock the code writes is a raise (a pop,
+        the first-run set, the playing-channel hold), so when the file's
+        clock is ahead of the one about to be written, the file's entry is
+        kept as it is.  Each case is journalled as 'carousel_kept' with the
+        path that tried to write (the eraser the journals could not name).
+        """
+        for k in [x for x in merged if x.endswith(":carousel")]:
+            mine, theirs = merged.get(k), on_disk.get(k)
+            if not isinstance(mine, dict) or not isinstance(theirs, dict) \
+                    or mine == theirs:
+                continue
+            try:
+                my_clock = float(mine.get("last_pop_time") or 0)
+                disk_clock = float(theirs.get("last_pop_time") or 0)
+            except (TypeError, ValueError):
+                continue
+            if disk_clock > my_clock + self.CAROUSEL_CLOCK_SLACK:
+                merged[k] = copy.deepcopy(theirs)
+                chan = k[:-len(":carousel")]
+                log("[ChannelManager] save would have lowered the carousel "
+                    "clock of {} from {:.0f} to {:.0f} - kept the newer "
+                    "one".format(chan[:8], disk_clock, my_clock),
+                    level=xbmc.LOGWARNING)
+                journal.record("carousel_kept",
+                               ch=self._journal_channel(chan),
+                               mine=my_clock, disk=disk_clock,
+                               via=journal.chain(2, 6))
+
+    def _keep_seen_clock(self, merged: dict, via: str, live) -> None:
+        """A save never writes a carousel clock below the highest one this
+        process has seen on the share (read or written).  (3.1.145)
+
+        _keep_newer_carousel compares with the copy of state.json this save
+        read.  When that copy was itself an old one (the share handed back a
+        file from before another device's pop), nothing in it is higher, and
+        the lower clock, or none at all, went out: 11/07 09:33 the PC wrote
+        0.0 for a channel whose clock the Livingroom had put there 40 s
+        earlier, which the PC had itself seen.  Every clock the code writes
+        is a raise, so one below what this process has seen is put back to
+        it, and a missing entry is created again.
+
+        Left alone: a key being deleted on purpose, a channel that no longer
+        exists, every clock when the channel list could not be read
+        (live is None), and a clock seen more than CLOCK_FLOOR_SECONDS ago
+        (the stale views measured were 21 to 43 s old; a restore or edit made
+        by another process long after must not be undone).  Each change is
+        journalled as 'clock_floor', after 'clock_lowering_write' has
+        recorded what the save was about to write.
+        """
+        if live is None:
+            return
+        for k, seen in list(ChannelManager._clock_seen.items()):
+            chan = k[:-len(":carousel")]
+            if k in self._deleted_state_keys or chan not in live:
+                continue
+            if time.time() - seen[2] > self.CLOCK_FLOOR_SECONDS:
+                continue
+            entry = merged.get(k)
+            try:
+                cur = float(entry.get("last_pop_time") or 0) \
+                    if isinstance(entry, dict) else 0.0
+            except (TypeError, ValueError):
+                cur = 0.0
+            if cur >= seen[0] - self.CAROUSEL_CLOCK_SLACK:
+                continue
+            fixed = copy.deepcopy(entry) if isinstance(entry, dict) else {}
+            fixed["last_pop_time"] = seen[0]
+            merged[k] = fixed
+            log("[ChannelManager] save would have written the carousel clock "
+                "of {} as {:.0f}, below {:.0f} seen on the share - kept the "
+                "higher one".format(chan[:8], cur, seen[0]),
+                level=xbmc.LOGWARNING)
+            self._jrec("clock_floor", ch=self._journal_channel(chan),
+                       floor=seen[0], was=cur, floor_who=seen[1], via=via)
 
     def _backup_state(self, good_state: dict) -> None:
-        """Keep a rolling snapshot of the last state.json that read cleanly.
+        """Keep rolling and daily snapshots of the last state.json that read cleanly.
 
         Written at most once per STATE_BACKUP_SECONDS per process, into
         state.bak<N>.json with N cycling through STATE_BACKUP_SLOTS, so an
-        earlier good copy survives a bad overwrite for about 24 hours.
+        earlier good copy survives a bad overwrite for about 24 hours.  The
+        first clean save of each day also writes state.day<N>.json (14 slots).
         An empty state is never snapshotted.
         """
+        if not good_state:
+            return
         now = time.time()
-        if (not good_state
-                or now - ChannelManager._state_backup_at
-                < self.STATE_BACKUP_SECONDS):
+        day = int(now // 86400)
+        if day != ChannelManager._state_daily_on:
+            ChannelManager._state_daily_on = day
+            self._save_json(
+                self._resolve_path("state.day{}.json".format(
+                    day % self.STATE_DAILY_SLOTS)), good_state)
+        if now - ChannelManager._state_backup_at < self.STATE_BACKUP_SECONDS:
             return
         ChannelManager._state_backup_at = now
         slot = int(now // self.STATE_BACKUP_SECONDS) % self.STATE_BACKUP_SLOTS
         self._save_json(self._resolve_path("state.bak{}.json".format(slot)),
                         good_state)
+
+    @staticmethod
+    def _cursor_size(cursor: Any) -> tuple:
+        """(number of shows, sum of their positions) of a stored cursor."""
+        pos = cursor.get("ep_pos") if isinstance(cursor, dict) else None
+        if not isinstance(pos, dict):
+            return 0, 0
+        return len(pos), sum(v for v in pos.values()
+                             if isinstance(v, int) and not isinstance(v, bool))
+
+    def _guard_cursors(self, on_disk: dict, merged: dict) -> None:
+        """Log, and keep a copy of, any cursor this save is about to shrink.
+
+        A channel's cursor replaced by one with far fewer shows or far lower
+        positions is what "the channel started over" looks like in state.json.
+        The save still goes ahead (a reset or an edit can do this on purpose;
+        those remove the key first and are not compared), but the cursor that
+        is being replaced is written to cursor_kept_<channel>.json together
+        with the device that did it, so it can be put back and the log says
+        who and when.
+        """
+        for key, old in on_disk.items():
+            if not key.endswith(":cursor") or key not in merged:
+                continue
+            old_pos = old.get("ep_pos") if isinstance(old, dict) else None
+            new_pos = (merged[key].get("ep_pos")
+                       if isinstance(merged[key], dict) else None)
+            wrap_loss = 0       # positions given back by shows that just wrapped
+            if isinstance(old_pos, dict) and isinstance(new_pos, dict):
+                drops = [
+                    "{}: {} -> {}".format(sid, was, new_pos.get(sid, "gone"))
+                    for sid, was in old_pos.items()
+                    if isinstance(was, int) and (
+                        sid not in new_pos
+                        or (isinstance(new_pos[sid], int)
+                            and new_pos[sid] < was))]
+                if drops:
+                    import traceback
+                    cid_ = key[:-len(":cursor")]
+                    now_ = time.time()
+                    wrapped = [
+                        d for d in drops
+                        if now_ - self._RECENT_WRAPS.get(
+                            (cid_, d.split(":", 1)[0]), 0)
+                        <= self.WRAP_NOTE_SECONDS]
+                    lost = [d for d in drops if d not in wrapped]
+                    for d in wrapped:
+                        sid_ = d.split(":", 1)[0]
+                        was_, new_ = old_pos.get(sid_), new_pos.get(sid_)
+                        if isinstance(was_, int) and isinstance(new_, int):
+                            wrap_loss += was_ - new_
+                    if wrapped:
+                        log("[ChannelManager] wrapped to the first episode: "
+                            "channel {} - {}".format(
+                                cid_[:8], "; ".join(wrapped[:5])))
+                    if lost:
+                        log("[ChannelManager] POSITION DROP: channel {} - {} "
+                            "show(s) went back: {} - saved by {} via {}".format(
+                                cid_[:8], len(lost),
+                                "; ".join(lost[:5]), self.get_device_label(),
+                                " < ".join(f.name for f in
+                                           traceback.extract_stack(limit=8)[:-1]
+                                           )), level=xbmc.LOGWARNING)
+            if isinstance(old_pos, dict) and isinstance(new_pos, dict) and drops:
+                journal.record("position_drop",
+                               ch=self._journal_channel(
+                                   key[:-len(":cursor")]),
+                               drops=drops[:20], via=journal.chain(2, 8))
+            old_n, old_sum = self._cursor_size(old)
+            new_n, new_sum = self._cursor_size(merged[key])
+            lost_shows = (old_n >= 4
+                          and new_n <= old_n * self.CURSOR_SHRINK_RATIO)
+            # A show that just wrapped to its first episode gives its whole
+            # position back; that part is not a lost cursor.  Add it back
+            # before comparing, so only the unexplained part can trip the check.
+            lost_pos   = (old_sum >= self.CURSOR_SHRINK_MIN
+                          and new_sum + wrap_loss
+                          <= old_sum * self.CURSOR_SHRINK_RATIO)
+            if not (lost_shows or lost_pos):
+                continue
+            cid  = key[:-len(":cursor")]
+            name = next((c.get("name", "") for c in self._channels
+                         if c.get("id") == cid), "")
+            log("[ChannelManager] CURSOR SHRINK: channel '{}' ({}) cursor "
+                "replaced by one with {} show(s) / position total {} "
+                "(was {} / {}) - saved by {}; the replaced cursor is kept in "
+                "cursor_kept_{}.json".format(
+                    name, cid, new_n, new_sum, old_n, old_sum,
+                    self.get_device_label(), cid[:8]),
+                level=xbmc.LOGWARNING)
+            path = self._resolve_path("cursor_kept_{}.json".format(cid[:8]))
+            try:
+                kept = load_json_strict(path, [])
+            except JsonReadError:
+                continue    # unreadable now: do not replace what is there
+            if not isinstance(kept, list):
+                kept = []
+            kept.append({"at": int(time.time()),
+                         "by": self.get_device_label(),
+                         "channel": cid,
+                         "cursor": old})
+            self._save_json(path, kept[-self.CURSOR_KEPT_MAX:])
 
     def _queue_file_path(self, channel_id: str) -> str:
         return self._resolve_path("queue_{}.json".format(channel_id))
@@ -315,6 +722,57 @@ class ChannelManager:
         """Write the queue list for any channel type."""
         self._write_queue_file(channel_id, queue)
 
+    # -- Side panel starting channel (this device only) -----------------------
+    # panel_start.json lives in the local profile and is never shared: each
+    # device remembers its own last channel and its own chosen channel.
+
+    PANEL_START_FILE = "panel_start.json"
+
+    def _panel_start_path(self) -> str:
+        return os.path.join(self.profile, self.PANEL_START_FILE)
+
+    def _read_panel_start(self) -> dict:
+        data = load_json(self._panel_start_path(), {})
+        return data if isinstance(data, dict) else {}
+
+    def remember_last_channel(self, channel_id: str) -> None:
+        """Record channel_id as the last channel started on this device."""
+        if not channel_id:
+            return
+        data = self._read_panel_start()
+        if data.get("last_channel_id") == channel_id:
+            return
+        data["last_channel_id"] = channel_id
+        save_json(self._panel_start_path(), data)
+
+    def set_panel_start_channel(self, channel_id: str) -> None:
+        """Record the channel the side panel opens on when the setting is
+        'A specific channel'."""
+        data = self._read_panel_start()
+        data["fixed_channel_id"] = channel_id
+        save_json(self._panel_start_path(), data)
+
+    def get_panel_start_index(self, channels: list) -> int:
+        """Return the index in channels the side panel list opens on.
+
+        Follows the 'Channel list opens on' setting: 0 = first channel,
+        1 = last channel started on this device, 2 = the chosen channel.
+        Returns 0 when the setting is first channel, nothing is recorded, or
+        the recorded channel is not in channels (deleted or hidden).
+        """
+        try:
+            mode = int(self.addon.getSetting("panel_open_on") or 0)
+        except (TypeError, ValueError):
+            mode = 0
+        if mode not in (1, 2) or not channels:
+            return 0
+        key = "last_channel_id" if mode == 1 else "fixed_channel_id"
+        wanted = self._read_panel_start().get(key, "")
+        for i, ch in enumerate(channels):
+            if ch.get("id") == wanted:
+                return i
+        return 0
+
     def get_channel_queue_path(self, channel_id: str) -> str:
         """Return the filesystem path to the queue file.
         Public wrapper for use by UI components that monitor the file
@@ -334,26 +792,169 @@ class ChannelManager:
         key    = "{}:cursor".format(channel_id)
         stored = self._state.get(key)
         if stored and isinstance(stored, dict):
-            c = dict(self._ZERO_CURSOR)
+            c = copy.deepcopy(self._ZERO_CURSOR)
             c.update(stored)
             # Ensure sub-dicts are always present (forward-compat)
             for k in ("ep_pos", "ep_played", "slot_owed"):
                 if not isinstance(c.get(k), dict):
                     c[k] = {}
             return c
-        return dict(self._ZERO_CURSOR)
+        # A deep copy: a shallow one would hand every caller the same
+        # ep_pos / ep_played / slot_owed dicts, so a position written for one
+        # channel would show up in the blank cursor of the next.
+        return copy.deepcopy(self._ZERO_CURSOR)
 
-    def set_cursor(self, channel_id: str, cursor: dict) -> None:
-        """Write cursor to state for channel_id."""
+    def set_cursor(self, channel_id: str, cursor: dict,
+                   verify: bool = False) -> bool:
+        """Write cursor to state for channel_id.  True when it was saved to
+        state.json, False when the save was skipped or failed.
+
+        verify=True is used by the per-episode draws (1-for-1 replacement and
+        carousel pop): after saving, state.json is read again and a position
+        another device wrote over is written again (_verify_cursor_saved)."""
         if not self._ensure_state():
             log("[ChannelManager] set_cursor: state.json unreadable - cursor "
                 "for '{}' not saved".format(channel_id),
                 level=xbmc.LOGWARNING)
-            return
+            return False
         key = "{}:cursor".format(channel_id)
         self._deleted_state_keys.discard(key)
+        # Positions as they were when state.json was last read or written:
+        # the "old" values a lost save would leave behind.
+        old_cur = self._state_base.get(key) or {}
+        old_pos = dict(old_cur.get("ep_pos") or {})
         self._state[key] = cursor
-        self._save_state()
+        saved = self._save_state()
+        self._journal_cursor(channel_id, old_cur, cursor, saved)
+        if saved and verify:
+            self._verify_cursor_saved(channel_id, cursor, old_pos)
+        return saved
+
+    def _journal_cursor(self, channel_id: str, old_cur: dict, cursor: dict,
+                        saved: bool) -> None:
+        """Journal every position that this save changed: show id, the value
+        state.json had and the value now written, and who called."""
+        try:
+            new_pos = cursor.get("ep_pos") or {}
+            old_pos = old_cur.get("ep_pos") or {}
+            changes = {sid: [old_pos.get(sid), pos]
+                       for sid, pos in new_pos.items()
+                       if old_pos.get(sid) != pos}
+            played = {sid: [len(old_cur.get("ep_played", {}).get(sid, ())),
+                            len(lst)]
+                      for sid, lst in (cursor.get("ep_played") or {}).items()
+                      if len(old_cur.get("ep_played", {}).get(sid, ()))
+                      != len(lst)}
+            slot = [old_cur.get("show_slot"), cursor.get("show_slot")]
+            if not changes and not played and slot[0] == slot[1]:
+                return
+            journal.record(
+                "cursor", ch=self._journal_channel(channel_id),
+                pos=changes, played=played,
+                slot=slot if slot[0] != slot[1] else None,
+                saved=bool(saved), via=journal.chain(2))
+        except Exception:
+            pass
+
+    def journal_channel_name(self, channel_id: str) -> str:
+        """Public form of the journal's channel label, for service.py and
+        carousel.py ('Name (abcd1234)')."""
+        return self._journal_channel(channel_id)
+
+    def _journal_channel(self, channel_id: str) -> str:
+        """'Name (abcd1234)' for journal lines."""
+        ch = next((c for c in self._channels if c.get("id") == channel_id),
+                  None)
+        return "{} ({})".format(ch.get("name", "?") if ch else "?",
+                                str(channel_id)[:8])
+
+    def journal_snapshot(self) -> None:
+        """Journal every TV channel's positions and the episode ids waiting
+        in its queue.  Called by service.py once an hour (and at start), so
+        the journal holds regular check points that need no backup."""
+        try:
+            if not self._ensure_state():
+                return
+            for ch in self._channels:
+                if ch.get("channel_type", "tv") != "tv":
+                    continue
+                cid   = ch["id"]
+                cur   = self.get_cursor(cid)
+                queue = self.read_channel_queue(cid) or []
+                journal.record(
+                    "snapshot", ch=self._journal_channel(cid),
+                    pos=cur.get("ep_pos"), slot=cur.get("show_slot"),
+                    queue=[[i.get("show_id") or i.get("_show_id"),
+                            i.get("season"), i.get("episode"),
+                            i.get("episodeid")]
+                           for i in queue if not i.get("_interleaved")])
+        except Exception as exc:
+            log("[ChannelManager] journal_snapshot error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+
+    CURSOR_VERIFY_MS    = 1200
+    CURSOR_VERIFY_TRIES = 3
+
+    def _verify_cursor_saved(self, channel_id: str, cursor: dict,
+                             old_pos: dict) -> None:
+        """Put back positions that another device's save wiped out.
+
+        state.json is read, changed and written back whole.  If another device
+        reads it before this save and writes it after, its copy has the old
+        positions and replaces this save without any error.  A short time
+        after saving, read state.json again; for each show whose position this
+        save changed, if the file shows the OLD value again, write ours once
+        more.  A value that is neither old nor ours is another change and is
+        left alone.
+        """
+        key     = "{}:cursor".format(channel_id)
+        changed = {sid: pos for sid, pos in
+                   (cursor.get("ep_pos") or {}).items()
+                   if old_pos.get(sid) != pos}
+        if not changed:
+            return
+        for attempt in range(self.CURSOR_VERIFY_TRIES):
+            xbmc.sleep(self.CURSOR_VERIFY_MS)
+            disk, ok = self._read_strict(self._state_path, {})
+            if not ok:
+                return
+            on_disk = disk.get(key)
+            on_pos  = (on_disk.get("ep_pos") if isinstance(on_disk, dict)
+                       else None) or {}
+            lost    = {sid: pos for sid, pos in changed.items()
+                       if on_pos.get(sid) == old_pos.get(sid)
+                       and on_pos.get(sid) != pos}
+            if not lost:
+                return
+            log("[ChannelManager] cursor of {} was overwritten by another "
+                "device - {} position(s) written again".format(
+                    channel_id[:8], len(lost)), level=xbmc.LOGWARNING)
+            journal.record("cursor_rewritten",
+                           ch=self._journal_channel(channel_id),
+                           lost={sid: [old_pos.get(sid), pos]
+                                 for sid, pos in lost.items()},
+                           on_disk={sid: on_pos.get(sid) for sid in lost},
+                           attempt=attempt + 1)
+            fixed = copy.deepcopy(on_disk) if isinstance(on_disk, dict) \
+                else copy.deepcopy(cursor)
+            fixed.setdefault("ep_pos", {}).update(lost)
+            self._state[key] = fixed
+            self._state_base[key] = copy.deepcopy(on_disk) \
+                if isinstance(on_disk, dict) else None
+            if not self._save_state():
+                return
+
+    def rebuild_failed(self, channel_id: str) -> bool:
+        """True when the last queue rebuild of channel_id was refused because
+        its new positions could not be saved.  The old queue and positions
+        were left as they were."""
+        return channel_id in ChannelManager._rebuild_failed
+
+    def edit_blocked(self, channel_id: str) -> bool:
+        """True when the last Edit of channel_id was refused, with nothing
+        saved, because its queue could not be read.  Edit Channel tells the
+        user; the flag clears at the start of the next edit."""
+        return channel_id in ChannelManager._edit_blocked
 
     def clear_cursor(self, channel_id: str) -> None:
         """Delete the cursor for channel_id.
@@ -500,11 +1101,19 @@ class ChannelManager:
         return None
 
     def get_carousel_replacement(self, channel_id: str,
-                                 popped_show_id: int) -> Optional[dict]:
+                                 popped_show_id: int,
+                                 queue: Optional[list] = None,
+                                 consumed_id=None) -> Optional[dict]:
         """Get next episode of the SAME show that was carousel-popped.
 
         Does NOT advance show_slot — only the per-show ep_pos advances.
         spec §8.5, §9.2
+
+        queue / consumed_id (optional): the queue with the popped item
+        already removed, and the popped episode's id.  With them an episode
+        that is already waiting in the queue, or that was just popped, is not
+        drawn again (same rule as the TV 1-for-1 replacement); without them
+        the draw is unchanged.
         """
         if not self._ensure_state():
             log("[ChannelManager] get_carousel_replacement: state.json "
@@ -528,11 +1137,15 @@ class ChannelManager:
             return None
 
         sid_str = str(popped_show_id)
+        queued_ids = (None if queue is None else
+                      self._queued_ids(queue, channel_id, "episodeid",
+                                       show_id=popped_show_id))
         ep      = self._pick_one_ep_no_slot_advance(
             show, sid_str, episodes, cursor,
             channel.get("randomize", False), channel.get("recycle", True),
-            channel_id=channel_id)
-        self.set_cursor(channel_id, cursor)
+            channel_id=channel_id,
+            queued_ids=queued_ids, consumed_id=consumed_id)
+        self.set_cursor(channel_id, cursor, verify=True)
         return ep
 
     def get_interleaved_tv_replacement(self, source_ch: dict,
@@ -584,7 +1197,9 @@ class ChannelManager:
                     return None
                 idx = 0
             norm = _normalize_ep_fn(episodes[idx], source_cid, int(show_id),
-                                    all_episodes_for_show=episodes)
+                                    all_episodes_for_show=episodes,
+                                    default_seconds=self._default_episode_seconds())
+            self._note_default_length(source_cid, episodes[idx], norm)
             if norm:
                 return norm
             self.record_missing_duration(source_cid, episodes[idx], "no_nfo")
@@ -630,7 +1245,7 @@ class ChannelManager:
             queued_ids=self._queued_ids(host_queue, channel_id, "episodeid",
                                         show_id=show_id),
             consumed_id=consumed_item.get("episodeid"))
-        self.set_cursor(channel_id, cursor)
+        self.set_cursor(channel_id, cursor, verify=True)
         return ep
 
     @staticmethod
@@ -713,7 +1328,7 @@ class ChannelManager:
                             channel.get("randomize", False),
                             channel.get("recycle", True),
                             channel_id=channel_id)
-                        self.set_cursor(channel_id, cursor)
+                        self.set_cursor(channel_id, cursor, verify=True)
                         return ep
 
         # Tail show is exhausted (or queue is empty) — advance to next show.
@@ -764,7 +1379,7 @@ class ChannelManager:
                         # Keep show_slot in sync so round-robin path stays
                         # consistent if the channel mode ever changes.
                         cursor["show_slot"] = next_idx + 1
-                        self.set_cursor(channel_id, cursor)
+                        self.set_cursor(channel_id, cursor, verify=True)
                         return ep
             return None
 
@@ -785,7 +1400,7 @@ class ChannelManager:
                 channel.get("randomize", False), channel.get("recycle", True),
                 channel_id=channel_id)
             if ep:
-                self.set_cursor(channel_id, cursor)
+                self.set_cursor(channel_id, cursor, verify=True)
                 return ep
         return None
 
@@ -865,27 +1480,66 @@ class ChannelManager:
         playable episode left (or is exhausted with recycle off).
         """
         tried = set()
+        skipped = []
+        before = cursor["ep_pos"].get(sid_str)
+        played_before = len(cursor["ep_played"].get(sid_str, ()))
+        chosen = None
         for _ in range(max(1, len(episodes))):
             ep = self._next_candidate_ep(
                 show, sid_str, episodes, cursor, randomize, recycle,
-                queued_ids=queued_ids, consumed_id=consumed_id)
+                queued_ids=queued_ids, consumed_id=consumed_id,
+                channel_id=channel_id)
             if ep is None or ep["episodeid"] in tried:
-                return None
+                break
             tried.add(ep["episodeid"])
             norm = _normalize_ep_fn(ep, channel_id or show.get("tvshowid", 0),
                                     int(sid_str),
-                                    all_episodes_for_show=episodes)
+                                    all_episodes_for_show=episodes,
+                                    default_seconds=self._default_episode_seconds())
+            self._note_default_length(channel_id, ep, norm)
             if norm is not None:
-                return norm
+                chosen = norm
+                break
+            skipped.append([ep.get("season"), ep.get("episode"),
+                            ep["episodeid"]])
             self.record_missing_duration(channel_id, ep, "no_nfo")
-        return None
+        self._journal_draw(channel_id, show, sid_str, episodes, cursor,
+                           before, played_before, chosen, skipped,
+                           randomize, queued_ids, consumed_id)
+        return chosen
+
+    def _journal_draw(self, channel_id, show, sid_str, episodes, cursor,
+                      before, played_before, chosen, skipped, randomize,
+                      queued_ids, consumed_id) -> None:
+        """Journal one draw: the show, its position before and after, the
+        episode drawn (or why none), and episodes skipped for a missing
+        length.  The position BEFORE is the one in the cursor this draw
+        started from."""
+        try:
+            journal.record(
+                "draw", ch=self._journal_channel(channel_id),
+                show=sid_str, title=show.get("title", ""),
+                rand=bool(show.get("randomize", randomize)),
+                n_eps=len(episodes),
+                pos=[before, cursor["ep_pos"].get(sid_str)],
+                played=[played_before,
+                        len(cursor["ep_played"].get(sid_str, ()))],
+                got=([chosen.get("season"), chosen.get("episode"),
+                      chosen.get("episodeid"), chosen.get("title")]
+                     if chosen else None),
+                skipped=skipped or None,
+                queued=(len(queued_ids) if queued_ids is not None else None),
+                consumed=consumed_id, via=journal.chain(2, 6))
+        except Exception:
+            pass
 
     def _next_candidate_ep(self, show: dict, sid_str: str,
                            episodes: list, cursor: dict,
                            randomize: bool,
                            recycle: bool,
                            queued_ids: Optional[set] = None,
-                           consumed_id=None) -> Optional[dict]:
+                           consumed_id=None,
+                           channel_id: str = "") -> Optional[dict]:
         """Choose the show's next episode and advance its cursor.
 
         Duration is not checked here; _pick_one_ep_no_slot_advance does that.
@@ -905,6 +1559,9 @@ class ChannelManager:
                 if not recycle:
                     return None
                 # Reset cycle
+                journal.record("cycle_reset",
+                               ch=self._journal_channel(channel_id),
+                               show=sid_str, n_eps=len(ep_ids))
                 cursor["ep_played"][sid_str] = []
                 unplayed = list(ep_ids)
             queued = queued_ids or set()
@@ -922,21 +1579,97 @@ class ChannelManager:
             if chosen_id not in played_list:
                 played_list.append(chosen_id)
         else:
-            # Seed ep_pos from state if first access
+            from resources.lib.utils.multi_episode import count_episode_span
+            # Seed ep_pos from state if first access.  A show with no saved
+            # position but episodes already in the queue (the saved position
+            # was lost, or an edit kept the queue without recording it)
+            # continues after its last queued episode; starting at the first
+            # episode would put S01E01 at the end of a mid-series queue.
+            # Only the TV 1-for-1 replacement passes queued_ids.
             if sid_str not in cursor["ep_pos"]:
-                cursor["ep_pos"][sid_str] = 0
+                seed = 0
+                known = set(queued_ids or ())
+                if consumed_id is not None:
+                    known.add(consumed_id)
+                if known:
+                    last = max((i for i, e in enumerate(episodes)
+                                if e["episodeid"] in known), default=None)
+                    if last is not None:
+                        seed = last + count_episode_span(episodes[last])
+                        log("[ChannelManager] _next_candidate_ep: show {} - "
+                            "no saved position, continuing after its last "
+                            "queued episode (index {})".format(sid_str, seed))
+                        journal.record(
+                            "seed_position",
+                            ch=self._journal_channel(channel_id),
+                            show=sid_str, seed=seed)
+                cursor["ep_pos"][sid_str] = seed
 
             idx = cursor["ep_pos"].get(sid_str, 0)
             if idx >= len(episodes):
                 if not recycle:
                     return None
-                cursor["ep_pos"][sid_str] = 0
-                idx = 0
+                # The list may be short only for a moment (the library is
+                # being updated).  Wrapping here would send the show back to
+                # its first episode, so the list is fetched once more first.
+                self.library.invalidate_cache()
+                xbmc.sleep(self.WRAP_RECHECK_MS)
+                again = self.get_available_episodes(show)
+                if len(again) > len(episodes):
+                    episodes = again
+                if idx >= len(episodes):
+                    journal.record("wrap", ch=self._journal_channel(channel_id),
+                                   show=sid_str, was=idx, n_eps=len(episodes))
+                    ChannelManager._RECENT_WRAPS[(channel_id, sid_str)] = \
+                        time.time()
+                    cursor["ep_pos"][sid_str] = 0
+                    idx = 0
             ep = episodes[idx]
             # Advance by span
-            from resources.lib.utils.multi_episode import count_episode_span
             span = count_episode_span(ep)
             cursor["ep_pos"][sid_str] = idx + span
+
+            # An episode that is already waiting in the queue, or that was
+            # just consumed, is not drawn again: the show moves on to its
+            # next episode.  The consumed episode has already been removed
+            # from the queue by now, so it is counted here as well; without
+            # it a saved position that points at the episode which just
+            # finished would draw that same episode again.  This only
+            # happens when the saved position is behind the queue; the
+            # position then catches up.  If every episode is queued or
+            # consumed the first one found is used.  Only the TV 1-for-1
+            # replacement passes queued_ids, so other draws are unchanged.
+            blocked = queued_ids
+            if queued_ids is not None and consumed_id is not None:
+                blocked = set(queued_ids)
+                blocked.add(consumed_id)
+            if blocked and ep["episodeid"] in blocked:
+                first   = ep
+                skipped = 1          # the one found at the saved position
+                for _ in range(len(episodes)):
+                    nxt = cursor["ep_pos"][sid_str]
+                    if nxt >= len(episodes):
+                        if not recycle:
+                            break
+                        nxt = 0
+                    cand = episodes[nxt]
+                    if cand["episodeid"] not in blocked:
+                        cursor["ep_pos"][sid_str] = nxt + count_episode_span(cand)
+                        ep = cand
+                        break
+                    cursor["ep_pos"][sid_str] = nxt + count_episode_span(cand)
+                    skipped += 1
+                if ep is not first:
+                    log("[ChannelManager] _next_candidate_ep: show {} - {} "
+                        "episode(s) already queued skipped".format(
+                            sid_str, skipped))
+                    journal.record(
+                        "skip_queued", ch=self._journal_channel(channel_id),
+                        show=sid_str, skipped=skipped,
+                        first=[first.get("season"), first.get("episode"),
+                               first.get("episodeid")],
+                        used=[ep.get("season"), ep.get("episode"),
+                              ep.get("episodeid")])
 
         return ep
 
@@ -967,7 +1700,8 @@ class ChannelManager:
                                         start_show_index=start_show_index)
 
     def build_channel_queue(self, channel: dict,
-                            start_show_index: Optional[int] = None) -> list:
+                            start_show_index: Optional[int] = None,
+                            keep_places=None) -> list:
         """Build a fresh queue of exactly queue_size items for any channel type.
 
         Called on channel create, reset, or edit requiring rebuild.
@@ -977,6 +1711,13 @@ class ChannelManager:
 
         Returns [] without building when state.json cannot be read: a build
         writes the cursor, which must not happen from an empty stand-in.
+
+        keep_places: for a TV channel, True (or a set of show ids as text)
+        makes the build continue those shows from their saved positions
+        instead of from the channel's starting episodes.  Used when a queue
+        has to be rebuilt although the channel has been playing (its queue
+        file was missing or unreadable), so no show goes back to its first
+        episode.  None (the default) is the behaviour of a first build.
         """
         if not self._ensure_state():
             log("[ChannelManager] build_channel_queue: state.json "
@@ -991,7 +1732,8 @@ class ChannelManager:
 
         if ctype == "tv":
             return self._build_fresh_tv_queue(channel, target_size,
-                                              start_show_index)
+                                              start_show_index,
+                                              keep_places)
         if ctype == "movies":
             from resources.lib.channels.movies import MovieQueueBuilder
             return self.build_planned_queue(
@@ -1223,7 +1965,8 @@ class ChannelManager:
 
     def _build_fresh_tv_queue(self, channel: dict,
                                target_size: int,
-                               start_show_index: Optional[int] = None) -> list:
+                               start_show_index: Optional[int] = None,
+                               keep_places=None) -> list:
         """Build a fresh TV queue using a zero cursor.
 
         Applies interleave if configured.  Writes the cursor to state.
@@ -1250,15 +1993,44 @@ class ChannelManager:
         # queue builds from the user's chosen starting episodes.
         self._apply_starting_points(channel, zero)
 
+        # A rebuild of a channel that has been playing continues each show
+        # from its saved position, ahead of the starting episodes the
+        # channel was created with.
+        if keep_places:
+            show_ids = {str(sh["tvshowid"]) for sh in shows}
+            for sid_str, pos in self.get_cursor(channel_id).get(
+                    "ep_pos", {}).items():
+                if (sid_str in show_ids
+                        and (keep_places is True or sid_str in keep_places)
+                        and isinstance(pos, int) and pos > 0):
+                    zero["ep_pos"][sid_str] = pos
+
         items, cursor, weave_seed = self._build_planned_tv_items(
             channel, target_size, zero)
-        self.set_cursor(channel_id, cursor)
+        # The queue and the saved positions must agree.  If the positions
+        # cannot be saved, the queue is not handed back to be written: the
+        # old queue and old positions stay as a matching pair.
+        if not self.set_cursor(channel_id, cursor):
+            ChannelManager._rebuild_failed.add(channel_id)
+            log("[ChannelManager] _build_fresh_tv_queue: positions for '{}' "
+                "could not be saved - queue not rebuilt, old queue and "
+                "positions kept".format(channel.get("name", channel_id)),
+                level=xbmc.LOGWARNING)
+            return []
 
         items = self.weave_interleave_sources(channel, items,
                                                seed=weave_seed)
 
         log("[ChannelManager] _build_fresh_tv_queue: built {} items for '{}'"
             .format(len(items), channel.get("name", channel_id)))
+        journal.record(
+            "build", ch=self._journal_channel(channel_id),
+            keep_places=(sorted(keep_places) if isinstance(keep_places, set)
+                         else keep_places),
+            queue=[[i.get("show_id") or i.get("_show_id"), i.get("season"),
+                    i.get("episode"), i.get("episodeid")]
+                   for i in items if not i.get("_interleaved")],
+            via=journal.chain(1, 6))
         return items
 
     # =========================================================================
@@ -1486,7 +2258,9 @@ class ChannelManager:
 
             # Normalise (reads duration)
             norm = _normalize_ep_fn(ep, channel_id, int(sid_str),
-                                    all_episodes_for_show=episodes)
+                                    all_episodes_for_show=episodes,
+                                    default_seconds=self._default_episode_seconds())
+            self._note_default_length(channel_id, ep, norm)
             if norm is None:
                 # Missing duration — skip, advance cursor past it
                 self.record_missing_duration(channel_id, ep, "no_nfo")
@@ -1587,48 +2361,138 @@ class ChannelManager:
         1. Per-channel list in state.json — what context menus read.
         2. missing_durations.txt in the addon profile — permanent human log.
 
+        Each file is recorded once per Kodi session; a burst of skips is
+        written in batches (see MISSING_FLUSH_MAX / MISSING_FLUSH_SECONDS).
+
         spec §7.5
         """
         import datetime as _dt
 
         file_path = item.get("file", "")
-        show      = item.get("tvshowtitle", item.get("title", ""))
+        # A raw Kodi episode names its show "showtitle"; a queue item
+        # "tvshowtitle"; a movie has neither (3.1.159).
+        show      = (item.get("tvshowtitle") or item.get("showtitle")
+                     or item.get("title", ""))
         title     = item.get("title", "")
         season    = int(item.get("season",  0) or 0)
         episode   = int(item.get("episode", 0) or 0)
         ep_label  = ("S{:02d}E{:02d}".format(season, episode)
                      if season else "")
 
-        # 1. Per-channel state list
-        state_key = "{}:missing_durations".format(channel_id)
+        # Recorded once per file per Kodi session, then written in batches.
+        seen_key = (channel_id, file_path)
+        ch_obj   = self.get_channel(channel_id)
+        ch_name  = (ch_obj.get("name", channel_id) if ch_obj else channel_id)
+        now_dt   = _dt.datetime.utcnow()
+        entry = {
+            "show":    show,
+            "title":   title,
+            "episode": ep_label,
+            "file":    file_path,
+            "reason":  reason,
+            "ts":      int(now_dt.timestamp()),
+        }
+        line = "{}\t{}\t{}\t{}\t{}\t{}\n".format(
+            now_dt.strftime("%Y-%m-%d %H:%M:%S"), ch_name, show, ep_label,
+            file_path, reason)
+        cls = ChannelManager
+        with cls._MISSING_LOCK:
+            if (seen_key in cls._missing_seen
+                    or any(e["file"] == file_path
+                           for e in cls._missing_pending.get(channel_id, ()))):
+                return
+            cls._missing_pending.setdefault(channel_id, []).append(entry)
+            cls._missing_lines.append(line)
+            waiting = sum(len(v) for v in cls._missing_pending.values())
+            flush_now = (waiting >= self.MISSING_FLUSH_MAX
+                         or time.time() - cls._missing_flushed_at
+                         >= self.MISSING_FLUSH_SECONDS)
+            if not flush_now and cls._missing_timer is None:
+                timer = threading.Timer(self.MISSING_FLUSH_SECONDS,
+                                        self._flush_missing_later)
+                timer.daemon = True
+                cls._missing_timer = timer
+                timer.start()
+        if flush_now:
+            self.flush_missing_durations()
+
+    DEFAULT_LENGTH_REASON = "default_length"
+
+    def _note_default_length(self, channel_id: str, raw: dict, norm) -> None:
+        """Note an item that was queued with the default length because its
+        NFO gave no duration and Kodi held no running time (3.1.159).
+
+        ``norm`` is what normalize_ep / normalize_movie returned for the raw
+        Kodi item ``raw``.  Only the default-length guess is noted: an NFO or
+        Kodi running time is not, an item that was skipped is noted by its
+        caller, and folder items (which always use a default) do not come
+        through here.  Recording only: the item stays in the queue.
+        """
+        if norm is None or getattr(norm, "duration_source", "") != "default_setting":
+            return
+        self.record_missing_duration(channel_id, raw,
+                                     self.DEFAULT_LENGTH_REASON)
+
+    def _flush_missing_later(self) -> None:
+        """Timer callback: write whatever is waiting with a fresh manager,
+        so the state it merges back is current, not this object's copy."""
         try:
-            existing = list(self.read_state_key(state_key, []))
-            known    = {e.get("file", "") for e in existing}
-            if file_path not in known:
-                existing.append({
-                    "show":    show,
-                    "title":   title,
-                    "episode": ep_label,
-                    "file":    file_path,
-                    "reason":  reason,
-                    "ts":      int(_dt.datetime.utcnow().timestamp()),
-                })
-                if len(existing) > 200:
-                    existing = existing[-200:]
-                self.write_state_key(state_key, existing)
+            ChannelManager(self.addon).flush_missing_durations()
+        except Exception as exc:
+            log("[ChannelManager] flush_missing_durations (timer) error: "
+                "{}".format(exc), level=xbmc.LOGWARNING)
+
+    def flush_missing_durations(self) -> None:
+        """Write the waiting skipped-item entries: one state.json save for all
+        channels and one rewrite of missing_durations.txt for all lines."""
+        cls = ChannelManager
+        with cls._MISSING_LOCK:
+            pending, cls._missing_pending = cls._missing_pending, {}
+            lines,   cls._missing_lines   = cls._missing_lines, []
+            timer,   cls._missing_timer   = cls._missing_timer, None
+            previous_flush = cls._missing_flushed_at
+            cls._missing_flushed_at = time.time()
+        if timer is not None:
+            timer.cancel()
+        if not pending and not lines:
+            return
+
+        # 1. Per-channel state lists, one save for all of them
+        saved = False
+        try:
+            for channel_id, entries in pending.items():
+                state_key = "{}:missing_durations".format(channel_id)
+                existing  = list(self.read_state_key(state_key, []))
+                known     = {e.get("file", "") for e in existing}
+                added     = [e for e in entries
+                             if e.get("file", "") not in known]
+                if added:
+                    existing.extend(added)
+                    if len(existing) > 200:
+                        existing = existing[-200:]
+                    self._deleted_state_keys.discard(state_key)
+                    self._state[state_key] = existing
+            saved = self._save_state()
         except Exception as exc:
             log("[ChannelManager] record_missing_duration state error: "
                 "{}".format(exc))
+        if not saved:
+            # state.json could not be written (unreadable or share down):
+            # keep the entries for the next flush instead of losing them.
+            with cls._MISSING_LOCK:
+                for channel_id, entries in pending.items():
+                    cls._missing_pending.setdefault(channel_id, [])[:0] = entries
+                cls._missing_lines[:0] = lines
+                cls._missing_flushed_at = previous_flush
+            return
+        with cls._MISSING_LOCK:
+            for channel_id, entries in pending.items():
+                for e in entries:
+                    cls._missing_seen.add((channel_id, e.get("file", "")))
 
-        # 2. Global missing_durations.txt
+        # 2. Global missing_durations.txt, one rewrite for all lines
         try:
             txt_path = self._resolve_path("missing_durations.txt")
-            ts_str   = _dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-            ch_obj   = self.get_channel(channel_id)
-            ch_name  = (ch_obj.get("name", channel_id)
-                        if ch_obj else channel_id)
-            line     = "{}\t{}\t{}\t{}\t{}\t{}\n".format(
-                ts_str, ch_name, show, ep_label, file_path, reason)
             existing_txt = ""
             if xbmcvfs.exists(txt_path):
                 try:
@@ -1638,7 +2502,7 @@ class ChannelManager:
                 except Exception:
                     existing_txt = ""
             wf = xbmcvfs.File(txt_path, "w")
-            wf.write(existing_txt + line)
+            wf.write(existing_txt + "".join(lines))
             wf.close()
         except Exception as exc:
             log("[ChannelManager] record_missing_duration txt error: "
@@ -1665,8 +2529,164 @@ class ChannelManager:
     def set_carousel_state(self, channel_id: str, value: dict) -> None:
         key = "{}:carousel".format(channel_id)
         self._deleted_state_keys.discard(key)
+        prev = self._clock_of_entry(self._state.get(key))
         self._state[key] = value
-        self._save_state()
+        # The channel's own file is the authoritative copy (3.1.146); the
+        # save of state.json after it keeps the mirror an older build reads.
+        # Both writes happen under one hold of the shared-folder lock.
+        with self._lock_scope(self.WRITE_LOCK_WAIT_MS):
+            self._write_clock_entry(channel_id, value, prev=prev)
+            self._save_state()
+
+    # ------------------------------------------------------------------
+    # Per-channel carousel file (3.1.146, slice 1 of the per-channel state)
+    #
+    # state.json is one file that every device reads, changes and writes
+    # whole, over a share with no locking.  A device that read it just before
+    # another device saved a pop wrote the OLD carousel clock back, and the
+    # next check found the same pop due again (11/08 20:41: Bedroom and
+    # Kidsroom, 4.9 s apart).  The carousel entry of a channel (clock, last
+    # popped show, pop claim) now lives in chanstate_<channel id>.json, a
+    # small file that only the device popping or playing that channel writes.
+    # Reads take the entry from there.  state.json keeps a copy of it, so the
+    # build before this one (and the diagnostics) still find the clock.  A
+    # channel with no file yet is read from state.json, and the first write
+    # creates the file.
+    # ------------------------------------------------------------------
+
+    def _clock_file_path(self, channel_id: str) -> str:
+        return self._resolve_path("chanstate_{}.json".format(channel_id))
+
+    def _read_clock_entry(self, channel_id: str) -> tuple:
+        """(entry, readable, writer): the channel's carousel entry from its
+        own file; entry None when the file does not exist or holds none;
+        readable False when the file exists but cannot be read."""
+        try:
+            data = load_json_strict(self._clock_file_path(channel_id), None)
+        except JsonReadError as exc:
+            log("[ChannelManager] cannot read the carousel file of {}: {}"
+                .format(channel_id[:8], exc), level=xbmc.LOGWARNING)
+            return None, False, None
+        if not isinstance(data, dict):
+            return None, True, None
+        entry = data.get("carousel")
+        writer = data.get("_writer")
+        return (entry if isinstance(entry, dict) else None), True, writer
+
+    @staticmethod
+    def _clock_of_entry(entry):
+        """last_pop_time of a carousel entry as a float, or None."""
+        try:
+            return float(entry.get("last_pop_time")) \
+                if isinstance(entry, dict) \
+                and entry.get("last_pop_time") is not None else None
+        except (TypeError, ValueError):
+            return None
+
+    def _queue_stamp(self, channel_id: str):
+        """[mtime, size] of the channel's queue file as seen now, or None.
+        Journalled with each clock write: a clock that moved while the queue
+        file did not change had no pop behind it.  (3.1.147)"""
+        try:
+            st = xbmcvfs.Stat(self._queue_file_path(channel_id))
+            return [int(st.st_mtime()), int(st.st_size())]
+        except Exception:
+            return None
+
+    def _clock_write_evidence(self, channel_id: str, prev, clock: float,
+                              via: str) -> dict:
+        """Fields for the chanstate_write line, and a 'clock_jump' line when
+        the clock moved forward by more than CLOCK_JUMP_SECONDS although this
+        process won no claim on the channel in the last CLOCK_JUMP_CLAIM_AGE
+        seconds and the write is not the hold of a playing channel.  Logging
+        only; never raises.  (3.1.147)"""
+        try:
+            cls = ChannelManager
+            # The caller may have changed the entry in place before the
+            # write, so the clock to compare with is the one last read from
+            # the file or written, not the one in memory.
+            known = cls._last_clock.get(channel_id)
+            if known is not None:
+                prev = known
+            cls._last_clock[channel_id] = clock
+            q = self._queue_stamp(channel_id)
+            q_prev = cls._queue_stamps.get(channel_id)
+            cls._queue_stamps[channel_id] = q
+            fields = {"prev": prev, "q": q, "q_prev": q_prev}
+            if prev is None:
+                return fields
+            delta = round(clock - prev, 1)
+            fields["delta"] = delta
+            won = cls._won_at.get(channel_id)
+            claim_age = round(time.time() - won, 1) if won else None
+            if (delta > self.CLOCK_JUMP_SECONDS
+                    and "_hold_clock_while_playing" not in (via or "")
+                    and (claim_age is None
+                         or claim_age > self.CLOCK_JUMP_CLAIM_AGE)):
+                self._jrec("clock_jump", ch=self._journal_channel(channel_id),
+                           prev=prev, clock=clock, delta=delta, via=via,
+                           claim_age=claim_age, q=q, q_prev=q_prev,
+                           queue_changed=(q != q_prev))
+                log("[ChannelManager] carousel clock of {} moved forward {:.0f}"
+                    "s with no claim won here ({})".format(
+                        channel_id[:8], delta, via), level=xbmc.LOGWARNING)
+            return fields
+        except Exception:
+            return {}
+
+    def _write_clock_entry(self, channel_id: str, entry: dict,
+                           via: str = "", prev=None) -> bool:
+        """Write the channel's carousel entry to its own file.  True when it
+        was written.  Never raises: the mirror save that follows still runs."""
+        try:
+            via = via or journal.chain(2, 6)
+            data = {"carousel": entry, "_writer": self._writer_tag(via)}
+            ok = bool(save_json(self._clock_file_path(channel_id), data))
+            try:
+                clock = float((entry or {}).get("last_pop_time") or 0)
+            except (TypeError, ValueError):
+                clock = 0.0
+            extra = self._clock_write_evidence(channel_id, prev, clock, via)
+            self._jrec("chanstate_write", ch=self._journal_channel(channel_id),
+                       clock=clock, ok=ok, via=via, **extra)
+            if not ok:
+                log("[ChannelManager] the carousel file of {} could not be "
+                    "written".format(channel_id[:8]), level=xbmc.LOGWARNING)
+            return ok
+        except Exception as exc:
+            log("[ChannelManager] _write_clock_entry error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+            return False
+
+    def refresh_carousel_clocks(self, channel_ids) -> None:
+        """Take the carousel entry of each channel from its own file as this
+        manager's copy, without marking it as a change of this manager (as
+        _adopt_carousel).  A channel with no file, or an unreadable one, is
+        left as it is.  Called by the carousel tick before the due-checks."""
+        for cid in channel_ids or []:
+            try:
+                entry, ok, _w = self._read_clock_entry(cid)
+                if ok and entry is not None:
+                    self._adopt_carousel("{}:carousel".format(cid), entry)
+                    seen = self._clock_of_entry(entry)
+                    if seen is not None:
+                        ChannelManager._last_clock[cid] = seen
+            except Exception as exc:
+                log("[ChannelManager] refresh_carousel_clocks error: {}"
+                    .format(exc), level=xbmc.LOGWARNING)
+
+    def _with_clock_files(self, disk: dict) -> dict:
+        """A copy of the state.json content in which the carousel entry of
+        every carousel channel is the one from its own file (for the
+        diagnostics, which compare clocks).  Unreadable files are skipped."""
+        out = dict(disk)
+        for ch in self._channels:
+            if not ch.get("carousel_enabled", False):
+                continue
+            entry, ok, _w = self._read_clock_entry(ch["id"])
+            if ok and entry is not None:
+                out["{}:carousel".format(ch["id"])] = entry
+        return out
 
     def get_carousel_elapsed(self, channel_id: str):
         """Return seconds elapsed since the last carousel pop for channel_id.
@@ -1734,6 +2754,26 @@ class ChannelManager:
             self._save_json(path, {"device_id": dev_id})
         self._device_id = dev_id
         return dev_id
+
+    def get_device_label(self) -> str:
+        """Return a short readable name for this device, for log lines.
+
+        The device's friendly name plus the first four characters of its
+        device ID, e.g. "SHIELD #a1b2".  The ID part tells apart two devices
+        that share a name.  Used so a log can say which device acted.
+        (3.1.116)
+        """
+        cached = getattr(self, "_device_label", "")
+        if cached:
+            return cached
+        try:
+            name = (xbmc.getInfoLabel("System.FriendlyName") or "").strip()
+        except Exception:
+            name = ""
+        label = "{} #{}".format(name or "Kodi", self.get_device_id()[:4])
+        if name:                       # name not known yet at start-up: retry later
+            self._device_label = label
+        return label
 
     def _channel_lock_path(self, channel_id: str) -> str:
         return self._resolve_path("channel_lock_{}.json".format(channel_id))
@@ -1841,8 +2881,50 @@ class ChannelManager:
             except Exception as exc:
                 log("[ChannelManager] release_channel_lock delete error: {}"
                     .format(exc), level=xbmc.LOGWARNING)
+            # save_json wrote the lock through a same-named working copy in
+            # the local profile folder; it is not needed any more (3.1.130).
+            remove_local_copy("channel_lock_{}.json".format(channel_id))
         if self.owned_lock_channel() == channel_id:
             self._save_json(self._owned_lock_path(), {"channel_id": ""})
+
+    def remove_stale_channel_locks(self) -> int:
+        """Delete leftover channel_lock_<id>.json files, in the local folder
+        and on the share: locks of channels that no longer exist, and locks
+        not refreshed for LOCK_SWEEP_SECONDS.  The lock this device holds is
+        never touched.  Nothing is removed when no channel was loaded.
+        Returns the number of files removed.  (3.1.130)"""
+        if not self._channels or not getattr(self, "_channels_ok", True):
+            return 0
+        known = {c["id"] for c in self._channels}
+        own = self.owned_lock_channel()
+        now = time.time()
+        removed = 0
+        for path in channel_lock_files():
+            name = os.path.basename(path.rstrip("/"))
+            cid = name[len("channel_lock_"):-len(".json")]
+            if cid == own:
+                continue
+            lock = self._load_json(path, None)
+            if cid in known:
+                # Only a lock that was read and is plainly old is removed;
+                # a file that cannot be read right now is left alone.
+                if not isinstance(lock, dict):
+                    continue
+                try:
+                    age = now - float(lock.get("updated_at", 0))
+                except (TypeError, ValueError):
+                    continue
+                if age <= self.LOCK_SWEEP_SECONDS:
+                    continue
+            try:
+                if xbmcvfs.delete(path):
+                    removed += 1
+                    log("[ChannelManager] removed leftover channel lock "
+                        "{}".format(name))
+            except Exception as exc:
+                log("[ChannelManager] channel lock sweep could not remove "
+                    "{}: {}".format(name, exc), level=xbmc.LOGWARNING)
+        return removed
 
     # =========================================================================
     # Channel CRUD
@@ -1955,7 +3037,8 @@ class ChannelManager:
         return channel
 
     def _capture_edit_positions(self, channel_id: str, channel: dict,
-                                old_shows: list) -> tuple:
+                                old_shows: list,
+                                queue: Optional[list] = None) -> tuple:
         """Read the live queue before an edit-triggered rebuild.
 
         Returns (starting_points, start_show_index):
@@ -1976,8 +3059,8 @@ class ChannelManager:
         for show in shows:
             if show.get("randomize", channel.get("randomize", False)):
                 continue
-            ep = self.get_show_next_queued_episode(channel_id,
-                                                   show["tvshowid"])
+            ep = self.get_show_next_queued_episode(
+                channel_id, show["tvshowid"], queue=queue)
             if ep and ep.get("episodeid") is not None:
                 points[str(show["tvshowid"])] = {
                     "episodeid": ep["episodeid"],
@@ -1986,7 +3069,8 @@ class ChannelManager:
                     "title":     ep.get("title", ""),
                 }
 
-        head = next((i for i in self.get_channel_queue(channel_id)
+        head = next((i for i in (queue if queue is not None
+                                 else self.get_channel_queue(channel_id))
                      if not i.get("_interleaved")), None)
         head_sid = (head.get("show_id") or head.get("_show_id")) if head else None
         if head_sid is None:
@@ -2013,6 +3097,23 @@ class ChannelManager:
         channel = self.get_channel(channel_id)
         if not channel:
             return None
+
+        # An edit that can rebuild the queue first notes where every show
+        # is up to from the channel's queue.  If the queue cannot be read
+        # right now (another device is writing it) that note would be empty
+        # and the rebuild would start every show at its first episode, so
+        # nothing is changed or saved; edit_blocked() tells the screen.
+        ChannelManager._edit_blocked.discard(channel_id)
+        edit_queue = None
+        if channel.get("channel_type", "tv") == "tv" and "shows" in definition:
+            edit_queue = self.read_channel_queue(channel_id)
+            if edit_queue is None:
+                ChannelManager._edit_blocked.add(channel_id)
+                log("[ChannelManager] update_channel: queue of '{}' cannot "
+                    "be read - edit not saved".format(
+                        channel.get("name", channel_id)),
+                    level=xbmc.LOGWARNING)
+                return channel
 
         old_shows      = list(channel.get("shows",        []))
         old_queue_size = channel.get("queue_size",        30)
@@ -2076,7 +3177,7 @@ class ChannelManager:
             # instead of restarting at S01E01.
             if not no_queue_change:
                 keep_points, keep_start = self._capture_edit_positions(
-                    channel_id, channel, old_shows)
+                    channel_id, channel, old_shows, queue=edit_queue)
             self.update_cursor_for_edit(
                 channel_id,
                 added_show_ids=list(new_show_ids - old_show_ids),
@@ -2093,8 +3194,19 @@ class ChannelManager:
                     merged[str(k)] = v
                 rebuild_ch = dict(channel)
                 rebuild_ch["starting_points"] = merged
+            # No queue to read the shows' places from although the channel
+            # has saved positions (the queue file looked missing): continue
+            # from those, except for shows picked in this edit.
+            keep_set = None
+            if edit_queue == [] and not keep_points:
+                picked = {str(k) for k in
+                          (definition.get("starting_points") or {})}
+                keep_set = {sid for sid in
+                            self.get_cursor(channel_id).get("ep_pos", {})
+                            if sid not in picked}
             self._pregenerate_queue_safe(rebuild_ch,
-                                         start_show_index=keep_start)
+                                         start_show_index=keep_start,
+                                         keep_places=keep_set)
 
         # Starting episodes chosen in the Edit wizard (only shows the user
         # explicitly set are present). Apply them to the live queue — the
@@ -2234,10 +3346,42 @@ class ChannelManager:
                     xbmcvfs.delete(p)
             except Exception:
                 pass
+        # The local working copy that save_json leaves in the profile folder
+        # when the queue is on the shared folder.
+        remove_local_copy("queue_{}.json".format(channel_id))
+        # The channel's own carousel file (3.1.146).
+        clock_path = self._clock_file_path(channel_id)
+        for p in (clock_path, clock_path + ".tmp"):
+            try:
+                if xbmcvfs.exists(p):
+                    xbmcvfs.delete(p)
+            except Exception:
+                pass
+        remove_local_copy("chanstate_{}.json".format(channel_id))
 
         log("[ChannelManager] Deleted channel id={} — removed {} state "            "key(s), {} schedule(s)".format(
                 channel_id, len(keys_to_del), len(sched_ids_to_del)))
         return True
+
+    def known_queue_filenames(self) -> list:
+        """queue_<id>.json file names of the channels that exist."""
+        return ["queue_{}.json".format(c["id"]) for c in self._channels]
+
+    def remove_orphan_local_queues(self) -> int:
+        """Delete local queue_*.json working copies of channels that no longer
+        exist.  Only with shared storage active, and never when no channel
+        was loaded (an unreadable channels.json must not look like "all
+        channels deleted").  Returns the number of files removed."""
+        if not self._channels or not getattr(self, "_channels_ok", True):
+            return 0
+        known = set(self.known_queue_filenames())
+        removed = 0
+        for name in local_queue_files():
+            if name not in known and remove_local_copy(name):
+                removed += 1
+                log("[ChannelManager] removed leftover local queue file "
+                    "{}".format(name))
+        return removed
 
     def toggle_visibility(self, channel_id: str) -> None:
         channel = self.get_channel(channel_id)
@@ -2312,6 +3456,789 @@ class ChannelManager:
         self._save_json(self._schedules_path, schedules)
         return definition
 
+    # How long a schedule's fire claim holds other devices off.  (3.1.115)
+    SCHEDULE_CLAIM_SECONDS = 300
+    # Wait between writing a claim and checking it won, so a device claiming
+    # in the same moment has time to write.  (3.1.115)
+    SCHEDULE_CLAIM_SETTLE_MS = 1500
+
+    # How long a carousel pop claim holds other devices off, and the wait
+    # between writing a claim and checking it won.  (3.1.117)
+    CAROUSEL_CLAIM_SECONDS   = 120
+    CAROUSEL_CLAIM_SETTLE_MS = 1500
+    CAROUSEL_MOVED_SLACK     = 1.0    # s: claim refuses when the shared clock is
+                                      # more than this ahead of the one the check used
+    CAROUSEL_CLOCK_SLACK     = 0.5    # s: a save never lowers a clock by more than this
+    CLOCK_FLOOR_SECONDS      = 120    # s: a clock seen this recently is a floor for saves (3.1.145)
+
+    # ------------------------------------------------------------------
+    # Timing master (3.1.146)
+    #
+    # Every device on the shared folder used to check the carousel about once
+    # a minute, so two devices could find the same pop due in the same few
+    # seconds and both pop it (11/08, four times in 16 hours; the claim and
+    # the clock repair came too late).  One device may now be the timing
+    # master (setting "timing_master").  It writes a small heartbeat file,
+    # master.json, once a minute.  A device that is not the master and sees
+    # a live heartbeat leaves the carousel pops to it.  With no heartbeat, an
+    # old one or an unreadable file every device behaves as before, claims
+    # included, so nothing stops when the master is off.
+    #
+    # How "live" is judged: by THIS device's clock.  A heartbeat counts while
+    # its sequence number has changed within MASTER_STALE_SECONDS of the time
+    # this device last saw it change, so a Shield whose clock is a few
+    # seconds off does not matter.  The first time a master is seen, the
+    # time written in its file must also be recent (an old file left by a
+    # master that was switched off hours ago is not a master).
+    # Two devices set as master: the lower device id acts, the other defers.
+    # ------------------------------------------------------------------
+
+    CLOCK_JUMP_SECONDS   = 300    # a clock moved forward by more than this ...
+    CLOCK_JUMP_CLAIM_AGE = 120    # ... with no claim won here this recently is journalled (3.1.147)
+    MASTER_BEAT_SECONDS  = 50     # least time between two heartbeats
+    MASTER_STALE_SECONDS = 300    # a heartbeat that has not changed this long is gone
+    FOLLOWER_LOG_SECONDS = 3600   # follower_skip is journalled once an hour
+
+    def _master_path(self) -> str:
+        return self._resolve_path("master.json")
+
+    def is_timing_master(self) -> bool:
+        """True when the 'timing_master' setting is on for this device."""
+        try:
+            return str(self.addon.getSetting("timing_master")
+                       ).strip().lower() == "true"
+        except Exception:
+            return False
+
+    def _read_master(self) -> tuple:
+        """(heartbeat, readable): the heartbeat dict, or None when the file
+        is missing or holds none; readable False when it cannot be read."""
+        try:
+            data = load_json_strict(self._master_path(), None)
+        except JsonReadError:
+            return None, False
+        if isinstance(data, dict) and data.get("device_id"):
+            return data, True
+        return None, True
+
+    def _observe_master(self):
+        """The other device's live heartbeat as {'id', 'name', 'seq',
+        'seen_at', 'alive'}, or None when no other device is a live master.
+        Journals master_seen / master_lost / master_back on a change."""
+        cls = ChannelManager
+        me = self.get_device_id()
+        now = time.time()
+        hb, readable = self._read_master()
+        obs = cls._master_obs.get(me)
+        if readable and hb is not None and hb.get("device_id") != me:
+            other = hb["device_id"]
+            if obs is None or obs.get("id") != other \
+                    or obs.get("seq") != hb.get("seq"):
+                seen_at = now
+                if obs is None or obs.get("id") != other:
+                    try:
+                        age = abs(now - float(hb.get("t")))
+                    except (TypeError, ValueError):
+                        age = self.MASTER_STALE_SECONDS + 1
+                    if age > self.MASTER_STALE_SECONDS:
+                        seen_at = now - self.MASTER_STALE_SECONDS - 1
+                new = {"id": other, "name": hb.get("device_name") or other,
+                       "seq": hb.get("seq"), "seen_at": seen_at,
+                       "alive": obs.get("alive") if obs else None}
+                cls._master_obs[me] = obs = new
+        if obs is None:
+            return None
+        alive = (now - obs["seen_at"]) <= self.MASTER_STALE_SECONDS
+        was = obs.get("alive")
+        obs["alive"] = alive
+        if alive and was is None:
+            self._jrec("master_seen", master=obs["name"],
+                       age=round(now - obs["seen_at"], 1), seq=obs["seq"])
+        elif alive and was is False:
+            self._jrec("master_back", master=obs["name"], seq=obs["seq"])
+        elif not alive and was:
+            self._jrec("master_lost", master=obs["name"],
+                       age=round(now - obs["seen_at"], 1), seq=obs["seq"])
+        return obs if alive else None
+
+    def _acting_master(self) -> bool:
+        """True when this device is set as master and no master with a lower
+        device id is alive."""
+        if not self.is_timing_master():
+            return False
+        other = self._observe_master()
+        me = self.get_device_id()
+        if other is not None and other["id"] < me:
+            tag = (me, other["id"])
+            if tag not in ChannelManager._conflict_logged:
+                ChannelManager._conflict_logged.add(tag)
+                self._jrec("master_conflict", master=other["name"],
+                           master_id=other["id"][:8], this_id=me[:8])
+                log("[ChannelManager] two devices are set as timing master - "
+                    "{} has the lower id and acts, this device defers".format(
+                        other["name"]), level=xbmc.LOGWARNING)
+            return False
+        return True
+
+    def tick_master(self) -> None:
+        """Write the heartbeat when this device is the acting timing master.
+        Called by the carousel tick; at most one write per
+        MASTER_BEAT_SECONDS.  Never raises."""
+        try:
+            if not self._acting_master():
+                return
+            cls = ChannelManager
+            me = self.get_device_id()
+            now = time.time()
+            if now - cls._master_beat.get(me, 0.0) < self.MASTER_BEAT_SECONDS:
+                return
+            beat = {"device_id": me, "device_name": self.get_device_label(),
+                    "t": now, "seq": int(now * 1000),
+                    "version": str(self.addon.getAddonInfo("version"))}
+            if save_json(self._master_path(), beat):
+                cls._master_beat[me] = now
+            else:
+                log("[ChannelManager] the timing master heartbeat could not "
+                    "be written", level=xbmc.LOGWARNING)
+        except Exception as exc:
+            log("[ChannelManager] tick_master error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+
+    def master_in_charge(self) -> bool:
+        """True when another device is the live timing master, so this
+        device leaves the carousel pops to it.  False when this device is
+        the acting master, when no master is set, or when the heartbeat is
+        old or unreadable.  Never raises."""
+        try:
+            if self.is_timing_master():
+                return not self._acting_master()
+            return self._observe_master() is not None
+        except Exception as exc:
+            log("[ChannelManager] master_in_charge error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+            return False
+
+    def note_follower_skip(self, channel_id: str) -> None:
+        """Count a carousel pop left to the master; one follower_skip
+        journal line per hour with the count per channel."""
+        try:
+            sk = ChannelManager._skips
+            now = time.time()
+            if not sk.get("since"):
+                sk["since"] = now
+                sk["per"] = {}
+            per = sk.setdefault("per", {})
+            per[channel_id] = per.get(channel_id, 0) + 1
+            if now - sk["since"] >= self.FOLLOWER_LOG_SECONDS:
+                self._jrec("follower_skip", n=sum(per.values()),
+                           ch={self._journal_channel(c): n
+                               for c, n in per.items()},
+                           hours=round((now - sk["since"]) / 3600.0, 2))
+                sk["since"] = now
+                sk["per"] = {}
+        except Exception:
+            pass
+
+    def claim_carousel_pop(self, channel_id: str, new_last_pop: float,
+                           based_on: Optional[float] = None) -> bool:
+        """Claim the carousel pop that is due on a channel for this device.
+
+        Several devices on the same shared folder check the carousel about
+        once a minute and can find the same pop due in the same moment; each
+        then removes the same front item and draws its own replacement, and
+        one replacement is lost.  The device that wins this claim pops; the
+        others leave it, and the next check finds the clock moved on.
+        (3.1.117)
+
+        new_last_pop is the carousel clock value the pop will set.  based_on
+        is the clock value the caller's due-check started from.  Returns
+        False when the shared state already shows that clock value reached
+        (another device popped), when the shared clock is ahead of based_on
+        (another device popped since the check began: the caller's
+        elapsed time and queue front belong to different pops, 3.1.142),
+        when another device holds a live claim for it, when this device's
+        claim is overwritten by another device's (checked by reading the file
+        back after a short wait), or when the shared state cannot be read.
+        Shared storage has no atomic create, so as for schedule fires the
+        read-back settles a simultaneous claim.  On return the in-memory
+        carousel state of this channel is the one read from the shared file,
+        so the pop continues from current data.
+
+        Every outcome is journalled as a 'claim' line (3.1.142).
+        """
+        key  = "{}:carousel".format(channel_id)
+        name = self.get_device_label()
+        # Check and write under the lock, so two devices cannot both find
+        # the pop free and both write their claim.  The lock is given back
+        # before the settle wait, so other devices' saves are not held up.
+        with self._lock_scope(self.WRITE_LOCK_CLAIM_WAIT_MS):
+            wrote = self._claim_write(channel_id, new_last_pop, based_on)
+        if wrote is None:
+            return False
+        token, clock, stamp = wrote
+        xbmc.sleep(self.CAROUSEL_CLAIM_SETTLE_MS)
+        back_entry, ok, _w = self._read_clock_entry(channel_id)
+        back = dict(back_entry) if ok and back_entry is not None else {}
+        won  = (ok and isinstance(back.get("pop_claim"), dict)
+                and back["pop_claim"].get("token") == token)
+        if back:
+            self._adopt_carousel(key, back)
+        if won:
+            log("[ChannelManager] carousel claim: channel {} won by {}".format(
+                channel_id[:8], name))
+        else:
+            other = (back.get("pop_claim") or {}).get("device_name") \
+                if isinstance(back.get("pop_claim"), dict) else None
+            log("[ChannelManager] carousel claim: channel {} lost on {} - {} "
+                "claimed it in the same moment".format(
+                    channel_id[:8], name, other or "another device"))
+        self._journal_claim(channel_id, "won" if won else "lost",
+                            based_on=based_on, target=new_last_pop,
+                            disk=clock, stamp=stamp)
+        return won
+
+    def _claim_write(self, channel_id: str, new_last_pop: float,
+                     based_on: Optional[float]):
+        """The check-and-write half of claim_carousel_pop, run while the
+        shared-folder lock is held (3.1.148).  Returns None when the claim
+        is refused (the outcome is journalled here), else (token, clock,
+        stamp) after this device's claim has been written."""
+        key  = "{}:carousel".format(channel_id)
+        me   = self.get_device_id()
+        name = self.get_device_label()
+        # The channel's own file is the source (3.1.146); state.json only
+        # for a channel that has no file yet.
+        entry, fok, _w = self._read_clock_entry(channel_id)
+        disk, ok = self._read_strict(self._state_path, {})
+        stamp = self._state_stamp()
+        if not fok or (entry is None and not ok):
+            self._journal_claim(channel_id, "unreadable", based_on=based_on,
+                                target=new_last_pop, stamp=stamp)
+            return None
+        cs   = dict(entry) if entry is not None \
+            else dict((disk.get(key) if ok else None) or {})
+        try:
+            clock = float(cs.get("last_pop_time") or 0)
+        except (TypeError, ValueError):
+            clock = 0.0
+        if clock >= new_last_pop:
+            self._adopt_carousel(key, cs)
+            log("[ChannelManager] carousel claim: channel {} already popped "
+                "for this interval - nothing to do on {}".format(
+                    channel_id[:8], name))
+            self._journal_claim(channel_id, "already_popped",
+                                based_on=based_on, target=new_last_pop,
+                                disk=clock, stamp=stamp)
+            return None
+        if based_on is not None:
+            try:
+                moved = clock > float(based_on) + self.CAROUSEL_MOVED_SLACK
+            except (TypeError, ValueError):
+                moved = False
+            if moved:
+                self._adopt_carousel(key, cs)
+                log("[ChannelManager] carousel claim: channel {} refused on "
+                    "{} - the clock moved on since this check began "
+                    "(check used {:.0f}, shared clock {:.0f}); the next "
+                    "check starts from the shared clock".format(
+                        channel_id[:8], name, float(based_on), clock))
+                self._journal_claim(channel_id, "clock_moved",
+                                    based_on=based_on, target=new_last_pop,
+                                    disk=clock, stamp=stamp)
+                return None
+        held = cs.get("pop_claim")
+        if isinstance(held, dict) and held.get("device_id") != me:
+            try:
+                age = abs(time.time() - float(held.get("at", 0)))
+                covers = float(held.get("for", 0)) >= new_last_pop - 1.0
+            except (TypeError, ValueError):
+                age, covers = self.CAROUSEL_CLAIM_SECONDS + 1, False
+            if covers and age <= self.CAROUSEL_CLAIM_SECONDS:
+                self._adopt_carousel(key, cs)
+                log("[ChannelManager] carousel claim: channel {} refused on "
+                    "{} - {} is popping it ({:.0f}s ago)".format(
+                        channel_id[:8], name,
+                        held.get("device_name") or "another device", age))
+                self._journal_claim(
+                    channel_id, "held", based_on=based_on,
+                    target=new_last_pop, disk=clock, stamp=stamp,
+                    held={"dev": held.get("device_name"),
+                          "for": held.get("for"), "age": round(age, 1)})
+                return None
+        token = uuid.uuid4().hex
+        cs["pop_claim"] = {"device_id": me, "device_name": name,
+                           "for": new_last_pop, "at": time.time(),
+                           "token": token}
+        self.set_carousel_state(channel_id, cs)
+        return token, clock, stamp
+
+    def _adopt_carousel(self, key: str, entry: dict) -> None:
+        """Take the carousel entry read from the shared file as this
+        manager's copy WITHOUT marking it as a change of this manager.
+
+        The claim used to set only _state[key].  _save_state writes every key
+        whose in-memory value differs from _state_base, so a device that had
+        merely READ the entry (a refused claim) wrote that older copy back
+        with its next save of anything, and erased the winner's newer clock.
+        (3.1.142)
+        """
+        self._state[key] = entry
+        self._state_base[key] = copy.deepcopy(entry)
+
+    def _journal_claim(self, channel_id: str, outcome: str, **fields) -> None:
+        """One 'claim' journal line: the decision and the numbers behind it."""
+        if outcome == "won":
+            ChannelManager._won_at[channel_id] = time.time()
+        journal.record("claim", ch=self._journal_channel(channel_id),
+                       outcome=outcome, **fields)
+
+    def _state_stamp(self):
+        """[mtime, size] of state.json as this device sees it now, or None.
+        Journalled with each claim so that a device reading an older copy of
+        the shared file can be shown from the journals.  (3.1.142)"""
+        try:
+            st = xbmcvfs.Stat(self._state_path)
+            return [int(st.st_mtime()), int(st.st_size())]
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # Diagnostics (3.1.142).  They only write journal lines.  Every method
+    # here swallows its own errors: a failed diagnostic never touches a save.
+    # ------------------------------------------------------------------
+
+    CLOCK_WATCH_RECHECK_MS = 3000   # re-read after a clock went backwards
+    TICK_GAP_SECONDS       = 150    # the carousel tick runs every 60 s
+    SLEEP_JUMP_SECONDS     = 5      # wall time ahead of the monotonic clock
+    CLOCK_TABLE_SECONDS    = 3600   # hourly table of every carousel clock
+    UNREADABLE_LOG_SECONDS = 600
+    STALE_LOG_MAX          = 200    # stale_read lines per Kodi session
+
+    def _jrec(self, event: str, **fields) -> None:
+        """journal.record with this device's name on the line itself, so a
+        line written by the add-on's plugin process (which has no journal
+        file name of its own) still says which device wrote it."""
+        try:
+            fields.setdefault("dev", self.get_device_label())
+            journal.record(event, **fields)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _proc_tag() -> str:
+        """'<pid>:<script>' of this Kodi process: service or plugin call."""
+        try:
+            return "{}:{}".format(os.getpid(),
+                                  os.path.basename(sys.argv[0] or "")[:24])
+        except Exception:
+            return "?"
+
+    @staticmethod
+    def _clocks_of(state) -> dict:
+        """{'<channel>:carousel': last_pop_time} for every carousel entry."""
+        out = {}
+        try:
+            for k, v in (state or {}).items():
+                if k.endswith(":carousel") and isinstance(v, dict):
+                    try:
+                        out[k] = float(v.get("last_pop_time") or 0)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception:
+            pass
+        return out
+
+    @staticmethod
+    def _writer_name(state) -> str:
+        """Device name in the _writer tag of a state.json, or '?'."""
+        try:
+            tag = state.get("_writer")
+            return str(tag.get("dev") or "?") if isinstance(tag, dict) else "?"
+        except Exception:
+            return "?"
+
+    def _writer_tag(self, via: str) -> dict:
+        """The tag every save puts into state.json as '_writer': which
+        device, process and code path wrote this version of the file.  A
+        carousel clock found lowered can then be traced to the writer of
+        the version that lowered it."""
+        try:
+            ChannelManager._write_seq += 1
+            return {"dev": self.get_device_label(),
+                    "id": self.get_device_id()[:8],
+                    "t": round(time.time(), 1),
+                    "n": ChannelManager._write_seq,
+                    "proc": self._proc_tag(), "via": via}
+        except Exception:
+            return {}
+
+    def _learn_clocks(self, state, who: str) -> None:
+        """Remember the highest carousel clock this process has seen on the
+        share (read or written), and who put it there."""
+        try:
+            for k, c in self._clocks_of(state).items():
+                seen = ChannelManager._clock_seen.get(k)
+                if seen is None or c > seen[0]:
+                    ChannelManager._clock_seen[k] = [c, who, time.time()]
+                elif c == seen[0]:
+                    seen[2] = time.time()   # seen again: still the floor (3.1.145)
+        except Exception:
+            pass
+
+    def _note_stamp(self, where: str, stamp, via: str = "") -> None:
+        """Journal 'stale_read' when state.json's modified time is OLDER than
+        one this process has already seen or written.  A file cannot go back
+        in time, so this proves that the share (or its cache) handed this
+        device an older copy."""
+        try:
+            if not stamp:
+                return
+            seen = ChannelManager._stamp_seen
+            if seen and stamp[0] < seen[0]:
+                if ChannelManager._stale_count < self.STALE_LOG_MAX:
+                    ChannelManager._stale_count += 1
+                    self._jrec("stale_read", where=where, seen=seen,
+                               now=stamp, via=via or journal.chain(2, 5))
+                return
+            ChannelManager._stamp_seen = [stamp[0], stamp[1]]
+        except Exception:
+            pass
+
+    def _diag_before_save(self, on_disk: dict) -> tuple:
+        """(code path of the caller of _save_state, state.json stamp) for the
+        journal, and learn the clocks on the share.  Never raises."""
+        try:
+            via = journal.chain(2, 7)
+            stamp = self._state_stamp()
+            self._note_stamp("save", stamp, via)
+            self._learn_clocks(on_disk, self._writer_name(on_disk))
+            return via, stamp
+        except Exception:
+            return "", None
+
+    def _journal_unreadable(self, where: str, exc=None) -> None:
+        """'state_unreadable' (at most one per UNREADABLE_LOG_SECONDS)."""
+        try:
+            now = time.time()
+            if now - ChannelManager._unreadable_at < self.UNREADABLE_LOG_SECONDS:
+                return
+            ChannelManager._unreadable_at = now
+            self._jrec("state_unreadable", where=where, err=str(exc)[:120],
+                       stamp=self._state_stamp())
+        except Exception:
+            pass
+
+    def _journal_lowering(self, merged: dict, stamp_read, via: str) -> None:
+        """Journal 'clock_lowering_write' when this save is about to write a
+        carousel clock below one this process has seen on the share.  The
+        copy of state.json this save started from was then older than the
+        share's (stale read), which _keep_newer_carousel cannot see."""
+        try:
+            for k, c in self._clocks_of(merged).items():
+                seen = ChannelManager._clock_seen.get(k)
+                if seen and c < seen[0] - self.CAROUSEL_CLOCK_SLACK:
+                    chan = k[:-len(":carousel")]
+                    self._jrec("clock_lowering_write",
+                               ch=self._journal_channel(chan), writing=c,
+                               known=seen[0], known_who=seen[1],
+                               known_at=round(seen[2]), read=stamp_read,
+                               seen=ChannelManager._stamp_seen, via=via)
+            live = {c.get("id") for c in self._channels}
+            have = self._clocks_of(merged)
+            for k, seen in list(ChannelManager._clock_seen.items()):
+                chan = k[:-len(":carousel")]
+                if k not in have and chan in live:
+                    self._jrec("clock_dropped_write",
+                               ch=self._journal_channel(chan),
+                               known=seen[0], known_who=seen[1],
+                               deleted=k in self._deleted_state_keys,
+                               read=stamp_read, via=via)
+        except Exception:
+            pass
+
+    def _journal_write(self, merged: dict, stamp_read, via: str) -> None:
+        """One 'state_write' line per save of state.json: what the save read,
+        what it left on the share, the gap between this device's clock and
+        the share's file time, and the carousel clocks when they changed."""
+        try:
+            wrote = self._state_stamp()
+            if wrote:
+                ChannelManager._stamp_seen = [wrote[0], wrote[1]]
+            self._learn_clocks(merged, "me")
+            rec = {"n": ChannelManager._write_seq, "via": via,
+                   "read": stamp_read, "wrote": wrote,
+                   "skew": (round(time.time() - wrote[0], 1)
+                            if wrote else None),
+                   "proc": self._proc_tag()}
+            clocks = self._clocks_of(merged)
+            if clocks != ChannelManager._clk_logged:
+                ChannelManager._clk_logged = dict(clocks)
+                rec["clk"] = {k.split(":", 1)[0][:8]: int(v)
+                              for k, v in clocks.items()}
+            self._jrec("state_write", **rec)
+        except Exception:
+            pass
+
+    def watch_carousel_clocks(self) -> None:
+        """Called by the carousel tick once a minute.  Records what this
+        device can prove about the shared carousel clocks:
+          tick_gap         the tick came late: the device slept (wall time
+                           ran on while the monotonic clock stopped), the
+                           service was stalled, or the clock was set
+          stale_read       state.json's file time went backwards
+          clock_regressed  a clock on the share is lower than one this
+                           device saw or wrote earlier, with the _writer tag
+                           of the file and a second reading 3 s later
+          memory_behind    this device's in-memory clock is older than the
+                           share's (the state a due-check would use)
+          clock_table      every carousel clock, once an hour
+        Logging only.  (3.1.142)"""
+        try:
+            self._watch_clocks()
+        except Exception as exc:
+            log("[ChannelManager] watch_carousel_clocks error: {}".format(exc),
+                level=xbmc.LOGWARNING)
+
+    def _watch_clocks(self) -> None:
+        cls = ChannelManager
+        wall, mono = time.time(), time.monotonic()
+        if cls._watch_wall:
+            dwall, dmono = wall - cls._watch_wall, mono - cls._watch_mono
+            if dwall > self.TICK_GAP_SECONDS \
+                    or abs(dwall - dmono) > self.SLEEP_JUMP_SECONDS:
+                if dwall - dmono > self.SLEEP_JUMP_SECONDS:
+                    kind = "slept"
+                elif dmono - dwall > self.SLEEP_JUMP_SECONDS:
+                    kind = "wall_clock_set_back"
+                else:
+                    kind = "late"
+                self._jrec("tick_gap", kind=kind, wall=round(dwall, 1),
+                           mono=round(dmono, 1))
+        cls._watch_wall, cls._watch_mono = wall, mono
+
+        disk, ok = self._read_strict(self._state_path, {})
+        if not ok:
+            self._journal_unreadable("watch")
+            return
+        stamp = self._state_stamp()
+        self._note_stamp("watch", stamp)
+        tag = disk.get("_writer") if isinstance(disk.get("_writer"), dict) \
+            else None
+        who = self._writer_name(disk)
+        disk = self._with_clock_files(disk)       # 3.1.146
+        clocks = self._clocks_of(disk)
+        for k, c in clocks.items():
+            chan = k[:-len(":carousel")]
+            seen = cls._clock_seen.get(k)
+            if seen and c < seen[0] - self.CAROUSEL_CLOCK_SLACK:
+                if cls._clock_regressed.get(k) != c:
+                    cls._clock_regressed[k] = c
+                    self._report_regression(k, c, seen, stamp, tag)
+            else:
+                cls._clock_regressed.pop(k, None)
+                if seen is None or c > seen[0]:
+                    cls._clock_seen[k] = [c, who, time.time()]
+            mem = self._state.get(k)
+            try:
+                mem_clock = float(mem.get("last_pop_time") or 0) \
+                    if isinstance(mem, dict) else 0.0
+            except (TypeError, ValueError):
+                mem_clock = 0.0
+            if c > mem_clock + self.CAROUSEL_CLOCK_SLACK \
+                    and (k, c) not in cls._behind_noted:
+                if len(cls._behind_noted) > 400:
+                    cls._behind_noted.clear()
+                cls._behind_noted.add((k, c))
+                self._jrec("memory_behind", ch=self._journal_channel(chan),
+                           mem=mem_clock, disk=c, stamp=stamp, writer=tag)
+        live = {c.get("id") for c in self._channels}
+        for k, seen in list(cls._clock_seen.items()):
+            if k in clocks:
+                continue
+            if k[:-len(":carousel")] not in live:
+                cls._clock_seen.pop(k, None)
+                continue
+            if cls._clock_regressed.get(k) != "missing":
+                cls._clock_regressed[k] = "missing"
+                self._report_regression(k, None, seen, stamp, tag)
+        if wall - cls._table_at >= self.CLOCK_TABLE_SECONDS:
+            cls._table_at = wall
+            self._jrec("clock_table", stamp=stamp, writer=tag,
+                       clk={k.split(":", 1)[0][:8]: int(v)
+                            for k, v in clocks.items()})
+
+    def _report_regression(self, key: str, now_clock: float, seen: list,
+                           stamp, tag) -> None:
+        """A carousel clock on the share is below one this device knew.
+        Journal who wrote the file that way, then read again after 3 s to
+        show whether it stayed that way."""
+        chan = key[:-len(":carousel")]
+        label = self._journal_channel(chan)
+        self._jrec("clock_regressed", ch=label, was=seen[0],
+                   was_who=seen[1], was_at=round(seen[2]), now=now_clock,
+                   stamp=stamp, writer=tag, seen=ChannelManager._stamp_seen)
+        log("[ChannelManager] carousel clock of {} went back from {:.0f} to "
+            "{} on the share".format(
+                chan[:8], seen[0],
+                "nothing (entry missing)" if now_clock is None
+                else "{:.0f}".format(now_clock)), level=xbmc.LOGWARNING)
+        xbmc.sleep(self.CLOCK_WATCH_RECHECK_MS)
+        disk, ok = self._read_strict(self._state_path, {})
+        again = self._clocks_of(disk).get(key) if ok else None
+        self._jrec("clock_regressed_after", ch=label, now=again,
+                   stamp=self._state_stamp(),
+                   writer=disk.get("_writer") if ok else None)
+
+    CLOCK_VERIFY_MS    = 1200
+    CLOCK_VERIFY_TRIES = 3
+
+    def verify_carousel_clock(self, channel_id: str, expected: float,
+                              last_popped_show=None) -> None:
+        """Put back a carousel clock that another device's save wiped out.
+
+        state.json is read, changed and written back whole.  A device that
+        read it before a pop was saved and writes it after puts the old
+        last_pop_time back without any error, and the next check then finds
+        the same pop due again.  A short time after the pop was saved, read
+        state.json again; if last_pop_time is below the value the pop set,
+        write it once more.  A value at or above it is another device's later
+        pop and is left alone.  (3.1.141)
+        """
+        key = "{}:carousel".format(channel_id)
+        for attempt in range(self.CLOCK_VERIFY_TRIES):
+            xbmc.sleep(self.CLOCK_VERIFY_MS)
+            entry, fok, fwriter = self._read_clock_entry(channel_id)
+            if not fok:
+                self._journal_unreadable("verify")
+                return
+            if entry is not None:
+                # The channel's own file (3.1.146).
+                disk, ok = {key: entry, "_writer": fwriter}, True
+            else:
+                disk, ok = self._read_strict(self._state_path, {})
+            if not ok:
+                self._journal_unreadable("verify")
+                return
+            on_disk = disk.get(key)
+            try:
+                clock = float((on_disk or {}).get("last_pop_time") or 0)
+            except (TypeError, ValueError, AttributeError):
+                clock = 0.0
+            stamp = self._state_stamp()
+            self._note_stamp("verify", stamp)
+            if clock >= expected:
+                self._jrec("clock_verified",
+                           ch=self._journal_channel(channel_id),
+                           expected=expected, on_disk=clock,
+                           attempt=attempt + 1, stamp=stamp,
+                           writer=disk.get("_writer"))
+                self._learn_clocks(disk, self._writer_name(disk))
+                return
+            log("[ChannelManager] carousel clock of {} was overwritten by "
+                "another device - written again".format(channel_id[:8]),
+                level=xbmc.LOGWARNING)
+            journal.record("clock_rewritten",
+                           ch=self._journal_channel(channel_id),
+                           expected=expected, on_disk=clock,
+                           attempt=attempt + 1, stamp=stamp,
+                           writer=disk.get("_writer"),
+                           seen=ChannelManager._stamp_seen,
+                           entry=on_disk if key in disk else "MISSING")
+            fixed = copy.deepcopy(on_disk) if isinstance(on_disk, dict) \
+                else copy.deepcopy(self._state.get(key) or {})
+            fixed["last_pop_time"] = expected
+            if last_popped_show is not None:
+                fixed["last_popped_show"] = last_popped_show
+            self._state[key] = fixed
+            self._state_base[key] = copy.deepcopy(on_disk) \
+                if isinstance(on_disk, dict) else None
+            wrote = self._write_clock_entry(channel_id, fixed, "verify")
+            saved = self._save_state()
+            if not (wrote or saved):
+                return
+
+    def _note_claim(self, schedule_id: str, outcome: str, text: str) -> None:
+        """Log one claim outcome per schedule, day and outcome.  The check
+        runs every minute, so a repeated refusal is logged once.  (3.1.116)"""
+        import datetime as _dt
+        noted = getattr(self, "_claim_noted", None)
+        if noted is None:
+            noted = self._claim_noted = set()
+        key = (schedule_id, _dt.date.today().isoformat(), outcome)
+        if key in noted:
+            return
+        noted.add(key)
+        log("[ChannelManager] schedule claim: {}".format(text))
+
+    def claim_schedule_fire(self, schedule_id: str) -> bool:
+        """Claim today's fire of a schedule for this device.
+
+        Returns True when this device may build and insert the block, False
+        when another device holds a live claim for today or wins a claim
+        made at the same moment.  Each schedule fires once: the claim covers
+        the seconds between deciding to fire and fire_block() recording
+        last_fired.  Shared storage has no atomic create, so the claim is
+        written, given a moment, and read back; the device whose claim is
+        still there proceeds.  (3.1.115)  The outcome is logged with the
+        device names involved.  (3.1.116)
+        """
+        import datetime as _dt
+        schedules = self.get_all_schedules()
+        sch = schedules.get(schedule_id)
+        if not sch:
+            return False
+        name  = sch.get("name", schedule_id)
+        today = _dt.date.today().isoformat()
+        me    = self.get_device_id()
+        held  = sch.get("fire_claim")
+        if isinstance(held, dict) and held.get("date") == today \
+                and held.get("device_id") != me:
+            try:
+                age = abs(time.time() - float(held.get("at", 0)))
+            except (TypeError, ValueError):
+                age = self.SCHEDULE_CLAIM_SECONDS + 1
+            if age <= self.SCHEDULE_CLAIM_SECONDS:
+                self._note_claim(
+                    schedule_id, "refused",
+                    "'{}' refused - already claimed by {} {:.0f}s ago".format(
+                        name, held.get("device_name") or "another device",
+                        age))
+                return False
+        token = uuid.uuid4().hex
+        mine  = dict(sch)
+        mine["fire_claim"] = {"device_id": me, "date": today,
+                              "device_name": self.get_device_label(),
+                              "at": time.time(), "token": token}
+        self.update_schedule(schedule_id, mine)
+        xbmc.sleep(self.SCHEDULE_CLAIM_SETTLE_MS)
+        back = (self.get_all_schedules().get(schedule_id) or {}) \
+            .get("fire_claim")
+        won = isinstance(back, dict) and back.get("token") == token
+        if won:
+            self._note_claim(
+                schedule_id, "won",
+                "'{}' won by {}".format(name, self.get_device_label()))
+        else:
+            self._note_claim(
+                schedule_id, "lost",
+                "'{}' lost - {} claimed it in the same moment".format(
+                    name, (back or {}).get("device_name") or "another device")
+                if isinstance(back, dict) else
+                "'{}' lost - claim not found on read-back".format(name))
+        return won
+
+    def release_schedule_claim(self, schedule_id: str) -> None:
+        """Drop this device's fire claim (the block could not be built), so
+        the schedule can be tried again on the next check.  (3.1.115)"""
+        sch = self.get_all_schedules().get(schedule_id)
+        if not sch:
+            return
+        held = sch.get("fire_claim")
+        if isinstance(held, dict) and held.get("device_id") == self.get_device_id():
+            mine = dict(sch)
+            mine.pop("fire_claim", None)
+            self.update_schedule(schedule_id, mine)
+
     def delete_schedule(self, schedule_id: str) -> None:
         schedules = self.get_all_schedules()
         if schedule_id in schedules:
@@ -2336,6 +4263,99 @@ class ChannelManager:
         self._state.pop(key, None)
         self._deleted_state_keys.add(key)
         self._save_state()
+
+    # ------------------------------------------------------------------
+    # Block expiry by slot  (3.1.155)
+    # ------------------------------------------------------------------
+
+    # How long a block-expiry claim holds other devices off, and the wait
+    # between writing it and checking it won.
+    BLOCK_EXPIRY_CLAIM_SECONDS   = 120
+    BLOCK_EXPIRY_CLAIM_SETTLE_MS = 1500
+
+    def block_expiry_enabled(self) -> bool:
+        """True when the "remove scheduled blocks when their slot ends"
+        setting is on (default off)."""
+        return self.addon.getSetting("block_expiry") == "true"
+
+    def default_item_seconds(self, item: dict) -> int:
+        """Default running time for a queue item whose own duration is 0:
+        the movie default for a movie, the episode default for the rest.
+        A default of 0 means "skip such items" elsewhere; for a time slot
+        that would end the moment it starts, so the built-in length (100
+        minutes for a movie, 30 for the rest) is used instead."""
+        if item.get("is_movie"):
+            return self._default_movie_seconds() or 100 * 60
+        return self._default_episode_seconds() or 30 * 60
+
+    def claim_block_expiry(self, channel_id: str) -> bool:
+        """Claim the block-expiry pass of a channel for this device.
+
+        Devices on the shared folder run the pass about once a minute; the
+        one whose claim is still there after a short wait removes the due
+        items, the others leave them.  A live claim of another device
+        refuses; a stale one is ignored.
+        """
+        key  = "{}:block_expiry_claim".format(channel_id)
+        me   = self.get_device_id()
+        held = self.read_state_key(key)
+        if isinstance(held, dict) and held.get("device_id") != me:
+            try:
+                age = abs(time.time() - float(held.get("at", 0)))
+            except (TypeError, ValueError):
+                age = self.BLOCK_EXPIRY_CLAIM_SECONDS + 1
+            if age <= self.BLOCK_EXPIRY_CLAIM_SECONDS:
+                return False
+        token = uuid.uuid4().hex
+        self.write_state_key(key, {
+            "device_id": me, "device_name": self.get_device_label(),
+            "at": time.time(), "token": token})
+        xbmc.sleep(self.BLOCK_EXPIRY_CLAIM_SETTLE_MS)
+        back = self.read_state_key(key)
+        return isinstance(back, dict) and back.get("token") == token
+
+    def release_block_expiry_claim(self, channel_id: str) -> None:
+        """Drop this device's block-expiry claim for channel_id."""
+        key = "{}:block_expiry_claim".format(channel_id)
+        held = self.read_state_key(key)
+        if isinstance(held, dict) and held.get("device_id") == self.get_device_id():
+            self._state.pop(key, None)
+            self._deleted_state_keys.add(key)
+            self._save_state()
+
+    def remove_block_items(self, channel_id: str, schedule_id: str,
+                           seqs) -> list:
+        """Remove the queue items of one scheduled block whose block
+        sequence number is in ``seqs``.  No replacement is added (the block
+        was extra to the channel).  The saved resume point of each removed
+        item is cleared.  Done under the block-expiry claim; the queue is
+        read again after the claim, and one that cannot be read is left
+        alone.  Returns the removed items (empty when nothing was removed or
+        the claim was lost).
+        """
+        wanted = set(seqs)
+        if not wanted or not self.claim_block_expiry(channel_id):
+            return []
+        removed = []
+        try:
+            queue = self.read_channel_queue(channel_id)
+            if not queue:
+                return []
+            keep = []
+            for item in queue:
+                if (item.get("_schedule_id") == schedule_id
+                        and item.get("_block_seq") in wanted):
+                    removed.append(item)
+                else:
+                    keep.append(item)
+            if removed:
+                self.write_channel_queue(channel_id, keep)
+                for item in removed:
+                    self.clear_resume_position(channel_id,
+                                               item.get("file", ""))
+        finally:
+            self.release_block_expiry_claim(channel_id)
+        return removed
 
     # =========================================================================
     # Combo Block public API  (spec §11)
@@ -2576,7 +4596,17 @@ class ChannelManager:
                           if m.get("movieid") in movie_id_set]
 
         if filters and all_movies:
-            all_movies = self.library.filter_items(all_movies, filters)
+            # Movies added by hand next to the filters ("pinned" in the
+            # channel's list) are not filtered out.
+            pinned_ids = {m["movieid"] for m in movies if m.get("pinned")}
+            if pinned_ids:
+                kept = [m for m in all_movies
+                        if m.get("movieid") in pinned_ids]
+                rest = [m for m in all_movies
+                        if m.get("movieid") not in pinned_ids]
+                all_movies = self.library.filter_items(rest, filters) + kept
+            else:
+                all_movies = self.library.filter_items(all_movies, filters)
 
         movie_lookup = {m["movieid"]: m for m in all_movies}
         if not movie_lookup:
@@ -2659,7 +4689,9 @@ class ChannelManager:
                         movie = movie_lookup.get(mid)
                         if movie:
                             norm = _normalize_movie_fn(
-                                movie, channel_id, library=self.library)
+                                movie, channel_id, library=self.library,
+                                default_seconds=self._default_movie_seconds())
+                            self._note_default_length(channel_id, movie, norm)
                             if not norm or not norm.get("duration"):
                                 self.record_missing_duration(
                                     channel_id, movie, "no_runtime")
@@ -2683,7 +4715,9 @@ class ChannelManager:
                 movie     = movie_lookup.get(chosen_id)
                 if movie:
                     norm = _normalize_movie_fn(
-                        movie, channel_id, library=self.library)
+                        movie, channel_id, library=self.library,
+                        default_seconds=self._default_movie_seconds())
+                    self._note_default_length(channel_id, movie, norm)
                     if not norm or not norm.get("duration"):
                         self.record_missing_duration(
                             channel_id, movie, "no_runtime")
@@ -2924,7 +4958,9 @@ class ChannelManager:
             while attempts > 0:
                 norm = _normalize_ep_fn(ep, combo_channel_id,
                                         sp["show_id"],
-                                        all_episodes_for_show=sp["available"])
+                                        all_episodes_for_show=sp["available"],
+                                        default_seconds=self._default_episode_seconds())
+                self._note_default_length(combo_channel_id, ep, norm)
                 if norm is not None:
                     norm["channel_id"]  = combo_channel_id
                     norm["_channel_id"] = combo_channel_id
@@ -3038,7 +5074,18 @@ class ChannelManager:
             combo_channel_id, slot_id)
 
         explicit_movies = slot.get("movies", [])
-        if explicit_movies:
+        if filters and explicit_movies:
+            # Filter slot with extras (3.1.152): the movies the filters match
+            # plus the ones added by hand, which the filters do not touch.
+            extra_ids = {m["movieid"] for m in explicit_movies
+                         if "movieid" in m}
+            matched   = self.library.get_movies_with_filters(filters)
+            seen      = {m.get("movieid") for m in matched}
+            all_movies = list(matched) + [
+                m for m in self.library.get_all_movies()
+                if m.get("movieid") in extra_ids
+                and m.get("movieid") not in seen]
+        elif explicit_movies:
             # User picked specific movies — build pool from those IDs only.
             explicit_ids = {m["movieid"] for m in explicit_movies
                             if "movieid" in m}
@@ -3085,7 +5132,9 @@ class ChannelManager:
 
         result = []
         for movie in pool[:count]:
-            norm = _normalize_movie_fn(movie, combo_channel_id, library=self.library)
+            norm = _normalize_movie_fn(movie, combo_channel_id, library=self.library,
+                                default_seconds=self._default_movie_seconds())
+            self._note_default_length(combo_channel_id, movie, norm)
             if not norm or not norm.get("duration"):
                 self.record_missing_duration(combo_channel_id, movie, "no_runtime")
                 continue
@@ -3226,15 +5275,21 @@ class ChannelManager:
         self._interleave_resume = {}
 
     def get_show_next_queued_episode(self, channel_id: str,
-                                     show_id: int) -> Optional[dict]:
+                                     show_id: int,
+                                     queue: Optional[list] = None
+                                     ) -> Optional[dict]:
         """Return the first queued (next-to-play) episode item for show_id on
         this channel, or None when the show has no episode in the queue.
 
         The queue is the authority for what a show will play next; the
         per-show state record is not advanced by playback. Interleaved
         items are ignored — their show belongs to another channel.
+
+        queue: the channel's queue, when the caller has already read it
+        (strictly); otherwise it is read here.
         """
-        for item in self.get_channel_queue(channel_id):
+        for item in (queue if queue is not None
+                     else self.get_channel_queue(channel_id)):
             if item.get("_interleaved"):
                 continue
             sid = item.get("show_id") or item.get("_show_id")
@@ -3325,6 +5380,26 @@ class ChannelManager:
         return key in self._load_json(self._state_path, {})
 
     # =========================================================================
+    # Default length settings (used when neither the NFO nor Kodi has one)
+    # =========================================================================
+
+    def _default_length_seconds(self, setting_id: str, fallback_minutes: int) -> int:
+        """Return a default-length setting (stored in minutes) as seconds.
+        0 means "not set": the item is skipped as before."""
+        try:
+            raw = self.addon.getSetting(setting_id)
+            minutes = int(raw) if str(raw).strip() != "" else fallback_minutes
+        except Exception:
+            minutes = fallback_minutes
+        return max(0, minutes) * 60
+
+    def _default_episode_seconds(self) -> int:
+        return self._default_length_seconds("default_episode_minutes", 30)
+
+    def _default_movie_seconds(self) -> int:
+        return self._default_length_seconds("default_movie_minutes", 100)
+
+    # =========================================================================
     # folder_default_duration setting helper
     # =========================================================================
 
@@ -3357,6 +5432,10 @@ class ChannelManager:
                     continue
                 key = "combo:{}:slot:{}:show:{}:tv_next_ep".format(
                     channel_id, slot_id, sid)
+                if key in self._combo_resume:
+                    # A rebuild that keeps places: the show continues where
+                    # it was, not at its starting point.
+                    continue
                 self.write_state_key(key, ep_id)
                 log("[ChannelManager] combo slot starting point: "
                     "show {} → episodeid {} (S{}E{} '{}')".format(
@@ -3488,6 +5567,12 @@ class ChannelManager:
             for k in keys_to_clear:
                 self._state.pop(k, None)
                 self._deleted_state_keys.add(k)
+            # A rebuild that keeps places puts the captured episodes back
+            # (rebuild_keep_places); every other caller has nothing here.
+            for k in keys_to_clear:
+                if k in self._combo_resume:
+                    self._deleted_state_keys.discard(k)
+                    self._state[k] = self._combo_resume[k]
             if keys_to_clear:
                 self._save_state()
                 log("[ChannelManager] _reset_combo_interleave_sources: "
@@ -3498,12 +5583,14 @@ class ChannelManager:
         return reset_combos
 
     def _pregenerate_queue_safe(self, channel: dict,
-                                start_show_index: Optional[int] = None) -> None:
+                                start_show_index: Optional[int] = None,
+                                keep_places=None) -> None:
         """Build a fresh queue for channel and write it to disk.
         Catches and logs all exceptions so a builder failure never crashes
         the wizard.
         """
         channel_id = channel["id"]
+        ChannelManager._rebuild_failed.discard(channel_id)
         try:
             # Combo block channels do not use a standalone queue file.
             # Their items are built on-demand via build_one_slot (1-for-1
@@ -3534,7 +5621,8 @@ class ChannelManager:
                 reset_combos = self._reset_combo_interleave_sources(channel)
 
             queue = self.build_channel_queue(channel,
-                                             start_show_index=start_show_index)
+                                             start_show_index=start_show_index,
+                                             keep_places=keep_places)
             if queue:
                 self._write_queue_file(channel_id, queue)
                 log("[ChannelManager] Pre-generated {} items for '{}'".format(
@@ -3670,6 +5758,52 @@ class ChannelManager:
             log("[ChannelManager] clear_channel_resume_points error: "
                 "{}".format(e))
 
+    def remove_stale_resume_points(self, only_channel: Optional[str] = None) -> int:
+        """Remove resume points of episodes that are no longer in their
+        channel's queue, and resume points of channels that no longer exist.
+        Returns the number removed.
+
+        A resume point is cleared when its episode finishes, is skipped or is
+        popped, but an episode can also leave the queue another way (Set
+        Start, an edit, a lost update on state.json) and its point stayed
+        for good (Real Crime, 10/24).  A channel whose queue cannot be read,
+        or is empty, is left alone, and nothing is done when the channel list
+        could not be read.  only_channel limits the check to one channel.
+        """
+        if not self._channels or not self._channels_ok:
+            return 0
+        if not self._ensure_state():
+            return 0
+        live = {c["id"] for c in self._channels}
+        by_channel: dict = {}
+        for key in self._state:
+            if not key.startswith("resume:"):
+                continue
+            parts = key.split(":", 2)           # resume : <channel> : <file>
+            if len(parts) != 3 or parts[2].startswith("file:"):
+                continue
+            by_channel.setdefault(parts[1], []).append((key, parts[2]))
+        stale = []
+        for cid, entries in by_channel.items():
+            if only_channel and cid != only_channel:
+                continue
+            if cid not in live:
+                stale.extend(k for k, _ in entries)
+                continue
+            queue = self.read_channel_queue(cid)
+            if not queue:
+                continue
+            queued = {it.get("file", "") for it in queue}
+            stale.extend(k for k, f in entries if f not in queued)
+        if not stale:
+            return 0
+        for key in stale:
+            log("[ChannelManager] removed stale resume point {}".format(key))
+            self._state.pop(key, None)
+        self._deleted_state_keys.update(stale)
+        self._save_state()
+        return len(stale)
+
     def reset_show_to_start(self, channel_id: str, show_id: int) -> bool:
         """Reset one show to its first episode (spec TC-30.17).
         Thin wrapper over set_show_start().
@@ -3710,6 +5844,15 @@ class ChannelManager:
         if not episodes:
             return False
 
+        # The queue is spliced below.  One that cannot be read right now is
+        # not an empty one: nothing is changed.
+        queue = self.read_channel_queue(channel_id)
+        if queue is None:
+            log("[ChannelManager] set_show_start: queue of channel {} cannot "
+                "be read - nothing changed".format(channel_id[:8]),
+                level=xbmc.LOGWARNING)
+            return False
+
         start_idx = 0
         if start_episode_id is not None:
             start_idx = next(
@@ -3738,7 +5881,6 @@ class ChannelManager:
         pos    = start_idx   # index of the next un-queued episode
         placed = set()       # episode ids already spliced in this pass
 
-        queue = self.get_channel_queue(channel_id)
         if queue:
             new_queue = []
             spliced   = 0
@@ -3761,7 +5903,9 @@ class ChannelManager:
                     if ep["episodeid"] in placed:
                         break                         # whole show used
                     norm = _normalize_ep_fn(ep, channel_id, int(show_id),
-                                            all_episodes_for_show=episodes)
+                                            all_episodes_for_show=episodes,
+                                            default_seconds=self._default_episode_seconds())
+                    self._note_default_length(channel_id, ep, norm)
                     if norm is None:
                         self.record_missing_duration(channel_id, ep, "no_nfo")
                     else:
@@ -3792,6 +5936,8 @@ class ChannelManager:
         if not show_randomize:
             cursor["ep_pos"][sid_str] = pos
         self.set_cursor(channel_id, cursor)
+        # Episodes the splice dropped from the queue keep no resume point.
+        self.remove_stale_resume_points(channel_id)
 
         # ── 2. Set show-state pointer ────────────────────────────────────────
         start_ep = episodes[start_idx]
@@ -3833,6 +5979,99 @@ class ChannelManager:
                     "error for '{}': {}".format(
                         combo_ch.get("name", combo_ch["id"]), combo_exc))
 
+    def capture_combo_progress(self, channel_id: str) -> dict:
+        """Where each sequential Combo Block TV show is up to in a host queue.
+
+        Returns {tv_next_ep state key: episode id}: the first queued
+        (next-to-play) episode of each sequential show of each TV slot of
+        each Combo Block woven into *channel_id*.  Randomised shows are
+        skipped (they have no fixed next episode).  A show whose queued
+        episodes are not in order (it was random on the last build) or that
+        has nothing queued gets the slot's starting point for it; a show
+        with neither is left out and starts at its first episode.
+        """
+        from resources.lib.channels.interleave import get_sources
+        channel = self.get_channel(channel_id)
+        if not channel:
+            return {}
+        queue = self.get_channel_queue(channel_id)
+        progress: dict = {}
+        for source in get_sources(channel):
+            combo = self.get_channel(source["channel_id"])
+            if not combo or combo.get("channel_type") != "combo":
+                continue
+            for slot in combo.get("slots", []):
+                if slot.get("source_type") != "tv":
+                    continue
+                slot_id = slot.get("slot_id", "")
+                for show in slot.get("shows", []):
+                    if show.get("randomize", True):
+                        continue
+                    sid = show.get("tvshowid")
+                    key = "combo:{}:slot:{}:show:{}:tv_next_ep".format(
+                        combo["id"], slot_id, sid)
+                    queued = [i for i in queue
+                              if i.get("_combo_slot") == slot_id
+                              and i.get("show_id") == sid
+                              and i.get("episodeid") is not None]
+                    start = None
+                    if queued and self._queued_in_order(show, queued):
+                        start = queued[0]["episodeid"]
+                    else:
+                        # Nothing queued, or the queued episodes were drawn
+                        # at random (the show was random on the last build):
+                        # the show's own starting point applies, if it has one.
+                        sp = (slot.get("starting_points") or {}).get(str(sid))
+                        if sp and sp.get("episodeid") is not None:
+                            start = sp["episodeid"]
+                    if start is not None:
+                        progress[key] = start
+        return progress
+
+    def _queued_in_order(self, show: dict, queued: list) -> bool:
+        """True when *queued* (a show's queued items, in queue order) follow
+        each other in the show's own episode order, as a sequential show's
+        do.  A single queued item cannot show a pattern and counts as in
+        order.  Items drawn at random do not follow each other."""
+        if len(queued) < 2:
+            return True
+        ids = [e["episodeid"] for e in self.get_available_episodes(show)]
+        if not ids:
+            return False
+        pos = {ep: n for n, ep in enumerate(ids)}
+        places = [pos.get(i["episodeid"]) for i in queued]
+        if None in places:
+            return False
+        return all((b - a) % len(ids) == 1 for a, b in zip(places, places[1:]))
+
+    def rebuild_keep_places(self, channel_id: str) -> bool:
+        """Rebuild a channel's queue so that what is woven into it is
+        brought up to date (an edited Combo Block, for example) while every
+        show keeps its place.
+
+        The channel's own shows continue from the head of the queue, the
+        interleaved TV shows and the Combo Block shows continue at the
+        episode that was next to play.  Nothing is reset: resume points are
+        kept.  Shows that were added to a Combo Block since start at their
+        beginning.  A Combo slot that takes turns, or plays a unit of
+        several shows, starts its rotation again from its first show.
+
+        Returns False, changing nothing, when the channel does not exist, has
+        nothing woven into it, or its queue cannot be read right now.
+        """
+        channel = self.get_channel(channel_id)
+        if (not channel or channel.get("channel_type") == "combo"
+                or not channel.get("interleave")):
+            return False
+        if self.read_channel_queue(channel_id) is None:
+            return False
+        self._combo_resume = self.capture_combo_progress(channel_id)
+        try:
+            self.regenerate_queue(channel_id)
+        finally:
+            self._combo_resume = {}
+        return True
+
     def regenerate_queue(self, channel_id: str) -> None:
         """Rebuild the queue after an interleave change, keeping each
         interleaved TV show at the episode it had reached."""
@@ -3859,7 +6098,14 @@ class ChannelManager:
         log("[ChannelManager] regenerate_queue for '{}'".format(
             channel.get("name", channel_id)))
 
-        existing_queue = self.get_channel_queue(channel_id)
+        # A queue that cannot be read right now is not an empty queue:
+        # nothing is changed (the next interleave change tries again).
+        existing_queue = self.read_channel_queue(channel_id)
+        if existing_queue is None:
+            log("[ChannelManager] regenerate_queue: queue of '{}' cannot be "
+                "read - not rebuilt".format(channel.get("name", channel_id)),
+                level=xbmc.LOGWARNING)
+            return
         interleave_cfg = channel.get("interleave")
 
         if existing_queue:
@@ -3916,6 +6162,18 @@ class ChannelManager:
                                     combo_ch.get("name", combo_ch["id"]),
                                     combo_exc))
                 else:
+                    if (channel.get("channel_type") == "tv"
+                            and channel.get("playback_mode") != "serial"):
+                        # queue_size counted the interleaved items, so the
+                        # primary items left over are fewer than queue_size.
+                        # Rebuild them from the head of the queue to the full
+                        # size, as the interleave-on path does (3.1.130).
+                        rewound = self._rewind_tv_cursor(channel, primary)
+                        if rewound is not None:
+                            self._regenerate_tv_interleave(channel, rewound)
+                            return
+                        log("[ChannelManager] regenerate_queue: cannot rewind "
+                            "cursor — keeping the existing primary items")
                     new_queue = primary
                     log("[ChannelManager] regenerate_queue: interleave "
                         "removed, {} primary items".format(len(new_queue)))
@@ -3925,13 +6183,178 @@ class ChannelManager:
         # No usable queue — full rebuild
         log("[ChannelManager] regenerate_queue: no existing queue, "
             "full rebuild")
-        self.clear_cursor(channel_id)
+        is_tv = channel.get("channel_type", "tv") == "tv"
+        if not is_tv:
+            self.clear_cursor(channel_id)
         q_path = self._queue_file_path(channel_id)
         if _xbmcvfs.exists(q_path):
             _xbmcvfs.delete(q_path)
-        self._pregenerate_queue_safe(channel)
+        # A TV channel keeps the places its shows have reached.
+        self._pregenerate_queue_safe(channel, keep_places=True if is_tv
+                                     else None)
 
-    def repair_queue_paths(self) -> dict:
+    # ------------------------------------------------------------------
+    # Automatic library upkeep  (3.1.156)
+    # ------------------------------------------------------------------
+    # State key "library_upkeep" in state.json:
+    #   date, done, tries, next_try, built_date, claim
+    # One device per day does the job (claim); the others see "done" and
+    # reload when local_library.json changes (LibraryClient).
+
+    UPKEEP_KEY           = "library_upkeep"
+    UPKEEP_CLAIM_SECONDS = 7200
+    UPKEEP_CLAIM_SETTLE_MS = 1500
+    UPKEEP_RETRY_SECONDS = 3600
+    UPKEEP_MAX_TRIES     = 3
+    # A local_library.json rebuilt this recently (by the hourly rebuild after
+    # a Kodi scan on the PVR PC, say) is not rebuilt again by the daily job.
+    UPKEEP_FRESH_SECONDS = 3600
+    UPKEEP_FRESH_SKEW    = 300     # a file this far "in the future" is clock skew
+
+    def library_upkeep_enabled(self) -> bool:
+        """True when the daily library upkeep setting is on (default off)."""
+        return self.addon.getSetting("library_upkeep") == "true"
+
+    def _upkeep_clock(self):
+        """(hour, minute) of the daily run; 04:00 when unset or invalid."""
+        raw = str(self.addon.getSetting("library_upkeep_time") or "").strip()
+        try:
+            hh, mm = raw.split(":")
+            hh, mm = int(hh), int(mm)
+            if 0 <= hh < 24 and 0 <= mm < 60:
+                return hh, mm
+        except ValueError:
+            pass
+        return 4, 0
+
+    def _upkeep_state(self, today: str) -> dict:
+        st = self.read_state_key(self.UPKEEP_KEY)
+        st = dict(st) if isinstance(st, dict) else {}
+        if st.get("date") != today:
+            # A new day starts clean (the library is rebuilt again).
+            st = {"date": today, "done": False, "tries": 0, "next_try": 0}
+        return st
+
+    def library_upkeep_due(self, now=None) -> bool:
+        """True when the daily upkeep should run now: the setting is on, the
+        run time has passed, today is not done and no retry is waiting."""
+        import datetime as _dt
+        if not self.library_upkeep_enabled():
+            return False
+        now = time.time() if now is None else now
+        day = _dt.datetime.fromtimestamp(now)
+        hh, mm = self._upkeep_clock()
+        if (day.hour, day.minute) < (hh, mm):
+            return False
+        st = self._upkeep_state(day.date().isoformat())
+        return not st["done"] and now >= float(st.get("next_try") or 0)
+
+    def claim_library_upkeep(self, now=None) -> bool:
+        """Claim today's upkeep for this device (see claim_block_expiry for
+        the pattern).  False when it is done today, a retry is waiting,
+        another device holds a live claim, or the claim is lost."""
+        import datetime as _dt
+        now = time.time() if now is None else now
+        today = _dt.datetime.fromtimestamp(now).date().isoformat()
+        st = self._upkeep_state(today)
+        if st["done"] or now < float(st.get("next_try") or 0):
+            return False
+        me = self.get_device_id()
+        held = st.get("claim")
+        if isinstance(held, dict) and held.get("device_id") != me:
+            try:
+                age = abs(now - float(held.get("at", 0)))
+            except (TypeError, ValueError):
+                age = self.UPKEEP_CLAIM_SECONDS + 1
+            if age <= self.UPKEEP_CLAIM_SECONDS:
+                return False
+        token = uuid.uuid4().hex
+        st["claim"] = {"device_id": me, "device_name": self.get_device_label(),
+                       "at": now, "token": token}
+        self.write_state_key(self.UPKEEP_KEY, st)
+        xbmc.sleep(self.UPKEEP_CLAIM_SETTLE_MS)
+        back = self.read_state_key(self.UPKEEP_KEY) or {}
+        return (isinstance(back.get("claim"), dict)
+                and back["claim"].get("token") == token)
+
+    def upkeep_busy_channels(self) -> set:
+        """Ids of the channels in use: held by another device or played on
+        this one.  The upkeep leaves their queues alone."""
+        busy = set()
+        for ch in self.get_all_channels():
+            cid = ch.get("id", "")
+            if cid and self.channel_lock_holder(cid):
+                busy.add(cid)
+        own = self.owned_lock_channel()
+        if own:
+            busy.add(own)
+        return busy
+
+    def run_library_upkeep(self, now=None) -> dict:
+        """The daily job, after claim_library_upkeep() succeeded.
+
+        1. rebuild local_library.json (once per day; not when it was
+           rebuilt within the last hour),
+        2. clear the in-memory library lists,
+        3. repair_queue_paths and repair_missing_shows for every channel not
+           in use.
+        A rebuild that fails, or channels left out because they are in use,
+        schedule a retry in an hour; after three tries the day is closed.
+        Returns {"built": bool, "skipped": [channel ids], "done": bool}.
+        """
+        import datetime as _dt
+        now = time.time() if now is None else now
+        today = _dt.datetime.fromtimestamp(now).date().isoformat()
+        st = self._upkeep_state(today)
+        st.pop("claim", None)
+        journal.record("upkeep_start", tries=st["tries"])
+        log("[ChannelManager] library upkeep: start (try {})".format(
+            st["tries"] + 1))
+        built = st.get("built_date") == today
+        skipped = []
+        paths = shows = None
+        rebuilt = False
+        if not built:
+            age = self.library.local_cache_age_days() * 86400.0
+            if -self.UPKEEP_FRESH_SKEW <= age <= self.UPKEEP_FRESH_SECONDS:
+                # Already rebuilt within the last hour: use it as it is.
+                built = True
+                st["built_date"] = today
+                log("[ChannelManager] library upkeep: local_library.json "
+                    "was rebuilt {} min ago - not rebuilt again".format(
+                        int(max(age, 0) // 60)))
+            else:
+                built = bool(self.library.build_local_cache(
+                    progress_callback=None))
+                rebuilt = built
+                if built:
+                    st["built_date"] = today
+        if built:
+            self.library.invalidate_cache()
+            skipped = sorted(self.upkeep_busy_channels())
+            paths = self.repair_queue_paths(skip=skipped)
+            shows = self.repair_missing_shows(skip=skipped)
+        st["tries"] = st["tries"] + 1
+        retry = (not built) or bool(skipped)
+        st["done"] = (not retry) or st["tries"] >= self.UPKEEP_MAX_TRIES
+        st["next_try"] = 0 if st["done"] else now + self.UPKEEP_RETRY_SECONDS
+        self.write_state_key(self.UPKEEP_KEY, st)
+        if retry:
+            journal.record("upkeep_skipped", built=built, channels=skipped,
+                           tries=st["tries"], done=st["done"])
+            log("[ChannelManager] library upkeep: {} - {}".format(
+                "library rebuild failed" if not built
+                else "{} channel(s) in use left out".format(len(skipped)),
+                "day closed" if st["done"] else "retry in an hour"))
+        if built:
+            journal.record("upkeep_done", paths=paths, shows=shows,
+                           skipped=len(skipped), done=st["done"],
+                           rebuilt=rebuilt)
+            log("[ChannelManager] library upkeep: done {} {}".format(
+                paths, shows))
+        return {"built": built, "skipped": skipped, "done": st["done"]}
+
+    def repair_queue_paths(self, skip=None) -> dict:
         """Bring every TV queue entry up to date with the Kodi library.
 
         For each queued episode, look it up in the library (by episode ID,
@@ -3942,15 +6365,20 @@ class ChannelManager:
         longer has is left untouched and counted as not found.  Movies,
         folders and audio are not checked.  The in-memory library lists are
         cleared first (in the service too) so the lookup is current.
+        ``skip`` is an optional set of channel ids left out entirely (the
+        automatic library upkeep skips channels in use).
         Returns {"fixed": n, "not_found": n, "unchanged": n}.
         """
         result = {"fixed": 0, "not_found": 0, "unchanged": 0}
+        skip = set(skip or ())
         self.library.invalidate_cache()
 
         # Load each show's episodes before touching any queue, so the
         # read-patch-write of a queue file below is short.
         lookups = {}
         for ch in self.get_all_channels():
+            if ch.get("id", "") in skip:
+                continue
             for item in self.get_channel_queue(ch.get("id", "")):
                 show_id = self._queue_item_show_id(item)
                 if show_id and show_id not in lookups:
@@ -3963,6 +6391,8 @@ class ChannelManager:
 
         for ch in self.get_all_channels():
             channel_id = ch.get("id", "")
+            if channel_id in skip:
+                continue
             queue      = self.get_channel_queue(channel_id)
             touched    = False
             for item in queue:
@@ -3981,7 +6411,7 @@ class ChannelManager:
                                   result["unchanged"]))
         return result
 
-    def repair_missing_shows(self) -> dict:
+    def repair_missing_shows(self, skip=None) -> dict:
         """Put back any show that has dropped out of a TV channel's queue.
 
         A round-robin TV queue holds at least one episode of every show on
@@ -3995,11 +6425,15 @@ class ChannelManager:
 
         The queue is read again just before it is written, so a second
         device repairing the same channel at the same moment does not add
-        the same show twice.
+        the same show twice.  ``skip`` is an optional set of channel ids
+        left out (channels in use, for the automatic library upkeep).
         Returns {"added": n, "no_episode": n}.
         """
         result = {"added": 0, "no_episode": 0}
+        skip = set(skip or ())
         for channel in list(self.get_all_channels()):
+            if channel.get("id", "") in skip:
+                continue
             if (channel.get("channel_type", "tv") != "tv"
                     or channel.get("playback_mode") == "serial"
                     or not channel.get("shows")):
@@ -4012,7 +6446,8 @@ class ChannelManager:
             if not missing:
                 continue
 
-            cursor = self.get_cursor(channel_id)
+            # A copy: the positions only change if the queue is written.
+            cursor = copy.deepcopy(self.get_cursor(channel_id))
             added  = []
             for show in missing:
                 episodes = self.get_available_episodes(show)
@@ -4035,7 +6470,11 @@ class ChannelManager:
                 continue
 
             # Read the queue again and keep only the shows still missing.
-            queue   = self.get_channel_queue(channel_id)
+            # One that cannot be read now is left alone (never written back
+            # as an empty queue).
+            queue = self.read_channel_queue(channel_id)
+            if not queue:
+                continue
             missing = {s["tvshowid"]
                        for s in self._shows_missing_from_queue(channel, queue)}
             insert_at = len(queue)
@@ -4123,13 +6562,87 @@ class ChannelManager:
             fresh["file"]))
         return "fixed"
 
+    def skip_items_with_replacement(self, channel_id: str, queue: list,
+                                    count: int) -> tuple:
+        """Pop the first `count` items of `queue` and draw one replacement
+        for each, appended to the tail (the 1-for-1 rule for skipped items).
+
+        `queue` is changed in place and NOT written: the caller writes it.
+        Resume points of the popped items are cleared.  Scheduled block items
+        are popped with no replacement (they are foreign to the channel and do
+        not repeat).  A combo slot item is replaced by one item of its own
+        slot.  Everything else goes through get_one_replacement.
+
+        Returns (replacements, block_items): the items appended to the tail,
+        in order, and the popped scheduled block items, which the caller
+        counts toward their block (counting saves state, so it must happen
+        after the caller's own writes).
+        Shared by service._handle_skip (Next button / playlist jump),
+        reorder_queue_from_item (side panel) and the service's handling of an
+        unplayable item.  spec §1.2, §7.4, §16.1
+        """
+        count = max(0, min(int(count), len(queue)))
+        skipped = queue[:count]
+
+        for item in skipped:
+            f = item.get("file", "")
+            if f:
+                self.clear_resume_position(channel_id, f)
+
+        from resources.lib.channels.combo import ComboQueueBuilder
+
+        replacements = []
+        block_items  = []
+        for item in skipped:
+            # _schedule_id takes precedence over _interleaved: combo-sourced
+            # block items carry both.
+            if item.get("_schedule_id"):
+                block_items.append(item)
+                continue
+            consumed_cid = item.get("_channel_id") or item.get("channel_id", "")
+            if self.is_combo_channel(consumed_cid):
+                combo_ch = self.get_channel(consumed_cid)
+                if not combo_ch:
+                    continue
+                consumed_slot_id = item.get("_combo_slot", "")
+                slots = combo_ch.get("slots", [])
+                slot_index = next(
+                    (i for i, sl in enumerate(slots)
+                     if sl.get("slot_id", "") == consumed_slot_id), None)
+                if slot_index is None:
+                    log("[ChannelManager] skip_items_with_replacement: "
+                        "slot_id {} not found - no replacement".format(
+                            consumed_slot_id[:8]), level=xbmc.LOGWARNING)
+                    continue
+                new_items = ComboQueueBuilder(self).build_one_slot(
+                    combo_ch, slot_index, host_queue=queue)
+                if new_items:
+                    queue.extend(new_items)
+                    replacements.extend(new_items)
+                    log("[ChannelManager] skip_items_with_replacement: "
+                        "replaced combo slot {} with '{}'".format(
+                            slot_index, new_items[0].get("title", "?")))
+            else:
+                replacement = self.get_one_replacement(
+                    channel_id, item, current_queue=queue)
+                if replacement:
+                    queue.append(replacement)
+                    replacements.append(replacement)
+
+        del queue[:count]
+        return replacements, block_items
+
     def reorder_queue_from_item(self, channel_id: str,
                                 queue_index: int) -> bool:
-        """Rotate the queue so the item at queue_index becomes position 0.
-        Items before it move to the tail in their original order.
-        Called by play_from_item (side panel click).
+        """Make the item at queue_index the front of the queue by skipping
+        every item in front of it: each is popped and one replacement is
+        appended to the tail, exactly as for the Next button.  Nothing is
+        rotated, so a show's episodes never end up out of order.
+        Scheduled block items passed over are popped with no replacement and
+        counted toward their block.
+        Called by play_from_item (side panel click and standard list).
         Returns True on success.
-        spec §16.1 (side panel Enter on right pane[N])
+        spec §16.1 (side panel Enter on right pane[N]), §7.4
         """
         queue = self.get_channel_queue(channel_id)
         if not queue:
@@ -4137,10 +6650,28 @@ class ChannelManager:
         if queue_index <= 0 or queue_index >= len(queue):
             return False
 
-        reordered = queue[queue_index:] + queue[:queue_index]
-        self.write_channel_queue(channel_id, reordered)
-        log("[ChannelManager] reorder_queue_from_item: channel={} "
-            "rotated to index {}".format(channel_id, queue_index))
+        passed = [it.get("title", "?") for it in queue[:queue_index]]
+        replacements, block_items = self.skip_items_with_replacement(
+            channel_id, queue, queue_index)
+        self.write_channel_queue(channel_id, queue)
+        log("[ChannelManager] reorder_queue_from_item: channel={} skipped {} "
+            "item(s) to index {} ({} replacement(s), {} block item(s)): {}"
+            .format(channel_id, queue_index, queue_index, len(replacements),
+                    len(block_items), ", ".join(passed)))
+
+        # Bookkeeping for the passed-over block items, after the queue write
+        # (counting saves state through this same manager).
+        if block_items:
+            from resources.lib.scheduler import ScheduleManager
+            for it in block_items:
+                try:
+                    ScheduleManager().on_block_item_complete(
+                        it["_schedule_id"], self)
+                except Exception as exc:
+                    log("[ChannelManager] reorder_queue_from_item: block "
+                        "count error for '{}': {}".format(
+                            it.get("title", "?"), exc),
+                        level=xbmc.LOGWARNING)
         return True
 
     def update_now_playing(self, channel: dict, item: dict) -> None:

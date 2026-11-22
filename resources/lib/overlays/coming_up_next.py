@@ -25,6 +25,8 @@ import xbmc
 import xbmcgui
 import xbmcaddon
 
+from resources.lib.utils.logger import log
+
 ADDON = xbmcaddon.Addon()
 
 
@@ -209,14 +211,36 @@ def show_overlay(next_ep, settings):
     corner   = settings.get("corner",   "bottom_right")
     duration = max(1, int(settings.get("duration", 8)))
 
+    global _active_window
     try:
         win = ComingUpNextWindow(lines, corner, duration)
+        _active_window = win
         win.show_timed()
-        xbmc.log("[plugin.video.smartchannels] [ComingUpNext] shown: {}".format(
+        log("[ComingUpNext] shown: {}".format(
             " | ".join(lines)), xbmc.LOGINFO)
     except Exception as e:
-        xbmc.log("[plugin.video.smartchannels] [ComingUpNext] error: {}".format(
+        log("[ComingUpNext] error: {}".format(
             e), xbmc.LOGWARNING)
+
+
+_active_window = None   # the overlay currently showing, if any
+
+
+def hide_overlay():
+    """Cancel the auto-dismiss timer and close the overlay at once.
+    Called by service.py when Kodi is closing, so no timer thread is left
+    running (Kodi waits for every thread before it ends the service)."""
+    global _active_window
+    win, _active_window = _active_window, None
+    if win is None:
+        return
+    try:
+        timer = getattr(win, "_timer", None)
+        if timer is not None:
+            timer.cancel()
+        win._auto_dismiss()
+    except Exception:
+        pass
 
 
 def load_settings():

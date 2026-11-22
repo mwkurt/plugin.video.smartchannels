@@ -1,7 +1,7 @@
 # channels/combo.py
 #
 # OWNS:   Queue building logic for Combo Block channels.
-#         Per-slot item fetching (TV, Movie, Folder).
+#         Per-slot item fetching (TV, Movie, Folder, single File).
 #         Per-slot state read/write via channel_manager public methods only.
 #
 # NEVER:  UI rendering. Playback control.
@@ -196,6 +196,8 @@ class ComboQueueBuilder(BaseQueueBuilder):
         if src == "folder":
             return self._fetch_folder_items(combo_id, slot, count,
                                             host_queue=host_queue)
+        if src == "file":
+            return self._fetch_file_items(combo_id, slot, count)
         log("[ComboQueueBuilder] Unknown source_type '{}' in slot "
             "{}".format(src, slot.get("slot_id", "?")),
             xbmc.LOGWARNING)
@@ -303,4 +305,30 @@ class ComboQueueBuilder(BaseQueueBuilder):
             for item in items:
                 item["title"] = folder_label
 
+        return items
+
+    def _fetch_file_items(self, combo_id: str, slot: dict, count: int) -> list:
+        """
+        Fetch `count` items for a single-file slot: the slot's one media
+        file, once per requested item.  The file is played every time the
+        slot comes up; it has no position to keep.
+        """
+        from resources.lib.channels.folder import FolderQueueBuilder
+
+        slot_id   = slot.get("slot_id", "")
+        file_path = slot.get("file_path", "")
+        if not file_path:
+            log("[ComboQueueBuilder] File slot {} has no file_path".format(
+                slot_id[:8]), xbmc.LOGWARNING)
+            return []
+
+        state_id = "combo:{}:slot:{}".format(combo_id, slot_id)
+        builder  = FolderQueueBuilder(self._cm)
+        items    = []
+        for _ in range(max(1, count)):
+            item = builder.item_for_file(state_id, file_path)
+            item["_channel_id"]      = combo_id
+            item["channel_id"]       = combo_id
+            item["_folder_state_id"] = state_id
+            items.append(item)
         return items

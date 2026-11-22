@@ -8,16 +8,23 @@ channel's queue at a recurring day/time.  The block plays as the next N
 items on the target channel; when the block finishes the regular queue
 items resume naturally.
 
-Who fires: only the client that is playing the schedule's target channel.
-Schedules and queues live in shared storage, so every client's service
-sees every schedule; if any client could fire, a client that merely has
-the add-on running (and cannot reach the same folders) would build and
-insert the block, and the client actually playing the channel would never
-reload for it.  check_all() therefore ignores every schedule whose target
-is not the channel the calling client is playing, and does nothing when
-the client is playing nothing.  A schedule whose start time has passed
-fires on the first 60-second tick after its target channel is playing,
-once per calendar day.
+Who fires (3.1.115): a schedule fires once per day, when its start time has
+passed (no upper limit), on one device:
+  - the device playing the target channel, or
+  - when no device is playing it, any device running the add-on on the same
+    shared folder.
+Before building the block the device claims the schedule
+(ChannelManager.claim_schedule_fire); only the device whose claim stands
+fires, and last_fired then keeps every other device off for the day.
+A device never fires a channel another device is playing.
+
+One block at a time per channel: while ANY item tagged with a schedule id is
+still in the target channel's queue file, every other schedule for that
+channel is skipped for the day (a repeating schedule tries again on its next
+day; a once-only schedule is switched off).  The block items sit in the queue
+untouched until they are watched, skipped by the user, or - on a carousel
+channel that is not playing - popped by the carousel.  When several schedules
+are due together the earliest start time goes first.
 
 Architecture rules
 ------------------
@@ -68,6 +75,7 @@ from __future__ import annotations
 import datetime
 import time
 
+from resources.lib.utils import journal
 from resources.lib.utils.logger import log
 
 # Day-of-week names used in schedule["day"] field.
@@ -78,6 +86,74 @@ _DOW_NAMES = [
     "monday", "tuesday", "wednesday", "thursday",
     "friday", "saturday", "sunday",
 ]  # datetime.weekday() 0-6
+
+
+# Waiting/skipping reasons already logged: (schedule id, date, text).  The
+# check runs every minute, so a reason that does not change is logged once
+# per schedule and day.  (3.1.116)
+_NOTED = set()
+
+
+def _note_once(sch_id, text):
+    """Log a scheduler decision once per schedule and day."""
+    key = (sch_id, datetime.date.today().isoformat(), text)
+    if key in _NOTED:
+        return
+    _NOTED.add(key)
+    log("[Scheduler] {}".format(text))
+
+
+def _log_block_items(name, block_items):
+    """Log every item of a block just built: position, title, show (or kind)
+    and combo slot.  The queue file shows this only until the items are
+    played, so the log keeps the record.  (3.1.116)"""
+    total = len(block_items)
+    for pos, item in enumerate(block_items, 1):
+        show = item.get("tvshowtitle") or (
+            "movie" if item.get("is_movie") else "folder item")
+        log("[Scheduler] fire_block: '{}' item {}/{}: '{}' - {} (slot {}, "
+            "{}s)".format(
+            name, pos, total, item.get("title", "?"), show,
+            str(item.get("_combo_slot", "-"))[:8],
+            int(item.get("duration", 0) or 0)))
+
+
+def _slot_start(schedule, now=None):
+    """Timestamp of the schedule's start time today (the start of its slot).
+
+    The slot of a block begins at the schedule's start time, not when the
+    block was actually built, so a late fire is caught up from the right
+    moment.  Falls back to ``now`` when the time cannot be read.  (3.1.155)
+    """
+    now = time.time() if now is None else now
+    try:
+        hh, mm = str(schedule.get("time", "")).split(":")
+        day = datetime.datetime.fromtimestamp(now).date()
+        return datetime.datetime.combine(
+            day, datetime.time(int(hh), int(mm))).timestamp()
+    except (ValueError, TypeError):
+        return now
+
+
+def _new_block_state(schedule, target_id, source_id, block_items, channel_manager):
+    """The active_block record written when a block is fired.  Besides the
+    counts it holds the slot start and every item's running time (by block
+    sequence), which block expiry needs.  (3.1.155)"""
+    durations = []
+    for item in block_items:
+        dur = int(item.get("duration", 0) or 0)
+        durations.append(dur if dur > 0
+                         else channel_manager.default_item_seconds(item))
+    return {
+        "schedule_id":    schedule["id"],
+        "target_ch_id":   target_id,
+        "source_ch_id":   source_id,
+        "items_played":   0,
+        "item_count":     len(block_items),
+        "inserted_at":    time.time(),
+        "slot_start":     _slot_start(schedule),
+        "durations":      durations,
+    }
 
 
 class ScheduleManager:
@@ -91,28 +167,20 @@ class ScheduleManager:
         """
         Called every 60 seconds from service.py tick loop.
 
-        Only schedules whose target channel is the channel this client is
-        playing are considered (now_playing_channel_id).  When the client is
-        playing nothing (None or empty) nothing is checked and nothing
-        fires, so a client that is not playing the target channel can never
-        fire its block.
-
-        For each such active schedule:
-          1. Is today the right day?
-          2. Has the soft-start time passed?
-          3. Has it already fired today (last_fired within same calendar day)?
-          4. Is there already an active block in progress for this schedule?
-          If all checks pass: fire the block.
-
-        fire_block() only writes to the queue file on disk — it does not
-        touch Kodi's in-memory playlist.  If the target channel is playing,
-        content_changed in _check_now_playing detects the update, reloads
-        self._queue, and _handle_end sets _pending_block_reload at the next
-        natural item boundary for seamless block insertion.
+        Looks at every active schedule that is due: today is its day, its
+        start time has passed and it has not fired today.  Due schedules are
+        taken earliest start time first; for each one _check_schedule()
+        decides whether this device fires it.
 
         now_playing_channel_id: id of the channel this client is playing
-        right now, or None/"" when it is playing nothing.  The caller
-        (service.py) supplies it only while Kodi is actually playing.
+        right now, or None/"" when it is playing nothing.  A schedule whose
+        target another device is playing is left to that device.
+
+        fire_block() only writes to the queue file on disk — it does not
+        touch Kodi's in-memory playlist.  If the target channel is playing
+        here, content_changed in _check_now_playing detects the update,
+        reloads self._queue, and _handle_end sets _pending_block_reload at
+        the next natural item boundary for seamless block insertion.
 
         channel_manager may be None on very early startup — guard and return.
 
@@ -126,10 +194,6 @@ class ScheduleManager:
         if channel_manager is None:
             return fired_targets
 
-        # Only the client playing the target channel may fire its blocks.
-        if not now_playing_channel_id:
-            return fired_targets
-
         try:
             schedules = channel_manager.get_all_schedules()
         except Exception as e:
@@ -141,15 +205,31 @@ class ScheduleManager:
 
         now = datetime.datetime.now()
 
+        due = []
         for sch_id, schedule in schedules.items():
             if not schedule.get("active", False):
                 continue
-
-            # Not the channel this client is playing: another client (or
-            # nobody) is responsible for it.
-            if schedule.get("target_channel", "") != now_playing_channel_id:
+            if not schedule.get("target_channel") \
+                    or not schedule.get("source_channel"):
                 continue
+            if not self._should_fire_today(schedule, now):
+                continue
+            if not self._time_has_passed(schedule.get("time", "00:00"), now):
+                continue
+            if self._already_fired_today(schedule, now):
+                _note_once(
+                    schedule.get("id", ""),
+                    "'{}': already fired today by {} - nothing to do "
+                    "here".format(
+                        schedule.get("name", schedule.get("id", "?")),
+                        schedule.get("last_fired_by") or "another device"))
+                continue
+            due.append(schedule)
 
+        # Earliest start time first: it is "first in line" for its channel.
+        due.sort(key=lambda s: (s.get("time", "00:00"), s.get("name", "")))
+
+        for schedule in due:
             try:
                 if self._check_schedule(
                         schedule, channel_manager,
@@ -158,7 +238,7 @@ class ScheduleManager:
             except Exception as e:
                 log("[Scheduler] check_all: error processing schedule "
                     "'{}': {}".format(
-                    schedule.get("name", sch_id), e))
+                    schedule.get("name", schedule.get("id", "?")), e))
 
         return fired_targets
 
@@ -178,23 +258,117 @@ class ScheduleManager:
         block = channel_manager.get_active_block(schedule_id)
         if not block:
             log("[Scheduler] on_block_item_complete: no active block for "
-                "'{}'".format(schedule_id))
+                "'{}' (device {})".format(
+                schedule_id, channel_manager.get_device_label()))
             return
 
         items_played = block.get("items_played", 0) + 1
         item_count   = block.get("item_count", 1)
 
         log("[Scheduler] block item complete: schedule='{}' "
-            "items_played={}/{}".format(
-            schedule_id, items_played, item_count))
+            "items_played={}/{} (device {})".format(
+            schedule_id, items_played, item_count,
+            channel_manager.get_device_label()))
 
         if items_played >= item_count:
             log("[Scheduler] block complete for schedule '{}' — "
-                "clearing active_block".format(schedule_id))
+                "clearing active_block (device {})".format(
+                schedule_id, channel_manager.get_device_label()))
             channel_manager.clear_active_block(schedule_id)
         else:
             block["items_played"] = items_played
             channel_manager.set_active_block(schedule_id, block)
+
+    def expire_blocks(self, channel_manager, now_playing_channel_id=None,
+                      now=None):
+        """Remove scheduled-block items whose time slot has ended.  (3.1.155)
+
+        Only when the block_expiry setting is on.  A block's slot starts at
+        the schedule's start time; item N's slot ends after the running
+        times of items 1..N.  An item whose slot has ended is taken out of
+        the queue (no replacement) and counted as complete.  A channel this
+        device is playing and a channel another device holds are left alone.
+        A block from before the upgrade (no slot yet) gets its slot at the
+        first pass.  Called about once a minute from service.py.
+        Returns the number of items removed.
+        """
+        if channel_manager is None or not channel_manager.block_expiry_enabled():
+            return 0
+        now = time.time() if now is None else now
+        removed_total = 0
+        try:
+            schedules = channel_manager.get_all_schedules()
+        except Exception as e:
+            log("[Scheduler] expire_blocks: could not load schedules: "
+                "{}".format(e))
+            return 0
+        for sch_id, schedule in list(schedules.items()):
+            try:
+                removed_total += self._expire_one(
+                    sch_id, schedule, channel_manager,
+                    now_playing_channel_id, now)
+            except Exception as e:
+                log("[Scheduler] expire_blocks: error on '{}': {}".format(
+                    schedule.get("name", sch_id), e))
+        return removed_total
+
+    def _expire_one(self, sch_id, schedule, channel_manager,
+                    now_playing_channel_id, now):
+        block = channel_manager.get_active_block(sch_id)
+        if not block:
+            return 0
+        target_id = block.get("target_ch_id") or schedule.get("target_channel", "")
+        if not target_id or target_id == now_playing_channel_id:
+            return 0
+        if channel_manager.channel_lock_holder(target_id):
+            return 0
+        queue = channel_manager.read_channel_queue(target_id)
+        if not queue:
+            return 0
+        items = {it.get("_block_seq"): it for it in queue
+                 if it.get("_schedule_id") == sch_id}
+        if not items:
+            return 0
+
+        durations = block.get("durations")
+        if block.get("slot_start") is None or not durations:
+            # Block from before the upgrade: its slot starts now, with the
+            # items still in the queue.
+            seqs = sorted(s for s in items if isinstance(s, int))
+            durations = [0] * (max(seqs) + 1 if seqs else 0)
+            for seq in seqs:
+                it = items[seq]
+                dur = int(it.get("duration", 0) or 0)
+                durations[seq] = dur if dur > 0 \
+                    else channel_manager.default_item_seconds(it)
+            block = dict(block)
+            block["slot_start"] = now
+            block["durations"]  = durations
+            channel_manager.set_active_block(sch_id, block)
+            log("[Scheduler] '{}': block slot starts now (block from "
+                "before block expiry)".format(schedule.get("name", sch_id)))
+            return 0
+
+        end = float(block["slot_start"])
+        due = []
+        for seq, dur in enumerate(durations):
+            end += dur
+            if seq in items and end <= now:
+                due.append(seq)
+        if not due:
+            return 0
+        removed = channel_manager.remove_block_items(target_id, sch_id, due)
+        if not removed:
+            return 0
+        journal.record("block_expired",
+                       ch=channel_manager.journal_channel_name(target_id),
+                       schedule=schedule.get("name", sch_id), n=len(removed),
+                       items=[journal.item_summary(i) for i in removed])
+        log("[Scheduler] '{}': {} block item(s) removed - their time slot "
+            "has ended".format(schedule.get("name", sch_id), len(removed)))
+        for _ in removed:
+            self.on_block_item_complete(sch_id, channel_manager)
+        return len(removed)
 
     # ------------------------------------------------------------------
     # Internal
@@ -202,83 +376,92 @@ class ScheduleManager:
 
     def _check_schedule(self, schedule, channel_manager, now,
                         now_playing_channel_id):
-        """Evaluate one schedule and fire its block if all checks pass.
+        """Decide whether this device fires one DUE schedule, and fire it.
 
-        Returns True when a block was fired (the schedule's last_fired
-        changed), False otherwise.
+        check_all() has already established that the schedule is active, due
+        today and not yet fired today.  Returns True when a block was fired
+        (the schedule's last_fired changed), False otherwise.
         """
         sch_id      = schedule["id"]
         target_id   = schedule.get("target_channel", "")
-        source_id   = schedule.get("source_channel", "")
         name        = schedule.get("name", sch_id)
 
-        if not target_id or not source_id:
-            return False
-
-        # 1. Is today the right day?
-        if not self._should_fire_today(schedule, now):
-            return False
-
-        # 2. Has the soft-start time passed?
-        start_time = schedule.get("time", "00:00")
-        if not self._time_has_passed(start_time, now):
-            log("[Scheduler] '{}': start time '{}' not yet reached".format(
-                name, start_time))
-            return False
-
-        # 3. Already fired today?
-        if self._already_fired_today(schedule, now):
-            log("[Scheduler] '{}': already fired today".format(name))
-            return False
-
-        # 4. Active block already in progress for this schedule?
-        if self._is_block_active(sch_id, channel_manager):
-            # Guard against stale active_block keys. Two staleness conditions:
-            #
-            # a) last_fired == 0: the wizard reset it (time/day/source changed),
-            #    meaning the user wants a fresh fire — any existing block is
-            #    from a superseded schedule config.
-            #
-            # b) inserted_at is from a previous calendar day: a real block
-            #    cannot span midnight; the block was abandoned (e.g. crash).
-            last_fired  = schedule.get("last_fired", 0)
-            block       = channel_manager.get_active_block(sch_id)
-            inserted_at = block.get("inserted_at", 0) if block else 0
-            stale       = False
-
-            if last_fired == 0:
-                stale = True
-                log("[Scheduler] '{}': clearing stale active_block "
-                    "(last_fired reset to 0)".format(name))
-            elif inserted_at:
-                import datetime as _dt
-                inserted_date = _dt.datetime.fromtimestamp(inserted_at).date()
-                if inserted_date < now.date():
-                    stale = True
-                    log("[Scheduler] '{}': clearing stale active_block "
-                        "from {} (today is {})".format(
-                            name, inserted_date, now.date()))
-
-            if stale:
-                channel_manager.clear_active_block(sch_id)
-                # Fall through to fire
-            else:
-                log("[Scheduler] '{}': block already active".format(name))
+        # 1. Another device is playing the target channel: it fires.
+        if target_id != now_playing_channel_id:
+            holder = channel_manager.channel_lock_holder(target_id)
+            if holder:
+                _note_once(sch_id, "'{}': waiting - the target channel is "
+                           "being played on {}; that device fires it".format(
+                               name, holder.get("device_name")
+                               or "another device"))
                 return False
 
-        # All checks passed — fire.
-        # NOTE: fire_block() only writes to the queue file on disk.
-        # It does not touch Kodi's in-memory playlist.  If the channel
-        # is currently playing, content_changed in _check_now_playing
-        # will detect the queue file update on the next tick, reload
-        # self._queue with the block items at front, and _handle_end
-        # will set _pending_block_reload at the next natural item
-        # boundary — giving seamless block insertion (Option C).
-        log("[Scheduler] '{}': all checks passed, firing block".format(name))
+        # 2. One block at a time per channel.  The queue file is the truth:
+        #    any item still tagged with a schedule id blocks every schedule
+        #    for this channel (it may be this schedule's own earlier block).
+        queue = channel_manager.read_channel_queue(target_id)
+        if queue is None:
+            _note_once(sch_id, "'{}': waiting - the target queue cannot be "
+                       "read right now".format(name))
+            return False          # unreadable right now - try next tick
+        if not queue:
+            _note_once(sch_id, "'{}': waiting - the target channel has no "
+                       "queue yet".format(name))
+            return False          # channel has no queue yet - nothing to prepend to
+        if any(item.get("_schedule_id") for item in queue):
+            self._skip_occurrence(
+                schedule, channel_manager,
+                "an earlier scheduled block is still in the queue")
+            return False
+
+        # A block record with no items left in the queue is a leftover.
+        if channel_manager.get_active_block(sch_id) is not None:
+            log("[Scheduler] '{}': clearing leftover active_block "
+                "(no block items in the queue)".format(name))
+            channel_manager.clear_active_block(sch_id)
+
+        # 3. Claim today's fire so no other device builds the same block.
+        if not channel_manager.claim_schedule_fire(sch_id):
+            _note_once(sch_id, "'{}': not firing on {} - another device "
+                       "holds the claim".format(
+                           name, channel_manager.get_device_label()))
+            return False
+
+        log("[Scheduler] '{}': all checks passed, firing block on {}".format(
+            name, channel_manager.get_device_label()))
         last_fired_before = schedule.get("last_fired", 0)
         self.fire_block(schedule, channel_manager)
         current = channel_manager.get_all_schedules().get(sch_id) or {}
-        return current.get("last_fired", last_fired_before) != last_fired_before
+        fired = current.get("last_fired", last_fired_before) != last_fired_before
+        if not fired:
+            log("[Scheduler] '{}': block was not recorded as fired - claim "
+                "released, will retry".format(name))
+            channel_manager.release_schedule_claim(sch_id)
+        return fired
+
+    def _skip_occurrence(self, schedule, channel_manager, reason) -> None:
+        """Skip today's fire of a schedule for good.
+
+        last_fired is set to now (the way the wizard marks a schedule created
+        after its time) so it is not tried again today, and last_skipped
+        records why it is not a real fire.  A once-only schedule is switched
+        off; a repeating one tries again on its next day.  Logged once.
+        """
+        sch_id = schedule["id"]
+        name   = schedule.get("name", sch_id)
+        current = channel_manager.get_all_schedules().get(sch_id)
+        if not current:
+            return
+        updated = dict(current)
+        updated["last_fired"]   = time.time()
+        updated["last_skipped"] = time.time()
+        if updated.get("recurrence") == "once":
+            updated["active"] = False
+            log("[Scheduler] '{}': skipped - {} - once-only schedule "
+                "switched off".format(name, reason))
+        else:
+            log("[Scheduler] '{}': skipped today - {}".format(name, reason))
+        channel_manager.update_schedule(sch_id, updated)
 
     def fire_block(self, schedule, channel_manager):
         """
@@ -339,6 +522,7 @@ class ScheduleManager:
                 for item in unit_items:
                     item = dict(item)
                     item["_schedule_id"] = sch_id
+                    item["_block_seq"]   = len(block_items)
                     item["_channel_id"]  = target_id
                     item["channel_id"]   = target_id
                     block_items.append(item)
@@ -347,8 +531,13 @@ class ScheduleManager:
                 return
             log("[Scheduler] fire_block: combo source built {} items "
                 "({} unit(s))".format(len(block_items), item_count))
+            _log_block_items(name, block_items)
             # Fall through to target queue write, active_block and last_fired.
-            tgt_queue = channel_manager.get_channel_queue(target_id) or []
+            tgt_queue = channel_manager.read_channel_queue(target_id)
+            if tgt_queue is None:
+                log("[Scheduler] fire_block: target queue cannot be read "
+                    "right now - not fired")
+                return
             new_tgt_queue = block_items + tgt_queue
             try:
                 channel_manager.write_channel_queue(target_id, new_tgt_queue)
@@ -359,44 +548,46 @@ class ScheduleManager:
                 log("[Scheduler] fire_block: cannot write target queue: "
                     "{}".format(e))
                 return
-            block_state = {
-                "schedule_id":    sch_id,
-                "target_ch_id":   target_id,
-                "source_ch_id":   source_id,
-                "items_played":   0,
-                "item_count":     len(block_items),
-                "inserted_at":    time.time(),
-            }
+            block_state = _new_block_state(
+                schedule, target_id, source_id, block_items, channel_manager)
             channel_manager.set_active_block(sch_id, block_state)
             schedules = channel_manager.get_all_schedules()
             if sch_id in schedules:
                 updated = dict(schedules[sch_id])
                 updated["last_fired"] = time.time()
+                updated["last_fired_by"] = channel_manager.get_device_label()
                 if schedule.get("recurrence") == "once":
                     updated["active"] = False
                     log("[Scheduler] fire_block: once-only schedule '{}' "
                         "deactivated".format(name))
                 channel_manager.update_schedule(sch_id, updated)
             log("[Scheduler] fire_block: block fired for '{}' — {} items "
-                "inserted into '{}'".format(
+                "inserted into '{}' (device {})".format(
                 name, len(block_items),
-                channel_manager.get_channel(target_id).get("name", target_id)))
+                channel_manager.get_channel(target_id).get("name", target_id),
+                channel_manager.get_device_label()))
             return
 
         # ── Regular (non-combo) source path ─────────────────────────────────
-        # Read source queue
+        # Read source queue (None = cannot be read right now: nothing is
+        # rebuilt or written, the schedule is tried again)
         try:
-            src_queue = channel_manager.get_channel_queue(source_id)
+            src_queue = channel_manager.read_channel_queue(source_id)
         except Exception as e:
             log("[Scheduler] fire_block: cannot read source queue: "
                 "{}".format(e))
+            return
+        if src_queue is None:
+            log("[Scheduler] fire_block: source queue cannot be read right "
+                "now - not fired")
             return
 
         if not src_queue:
             log("[Scheduler] fire_block: source queue empty, "
                 "attempting rebuild")
             try:
-                src_queue = channel_manager.build_channel_queue(source_ch)
+                src_queue = channel_manager.build_channel_queue(
+                    source_ch, keep_places=True)
                 if src_queue:
                     channel_manager.write_channel_queue(source_id, src_queue)
             except Exception as _tu:
@@ -419,6 +610,7 @@ class ScheduleManager:
             # Tag the item so service.py knows it belongs to this block
             item = dict(item)
             item["_schedule_id"] = sch_id
+            item["_block_seq"]   = len(block_items)
             item["_channel_id"]  = target_id
             item["channel_id"]   = target_id   # ownership check reads channel_id first
             block_items.append(item)
@@ -471,13 +663,18 @@ class ScheduleManager:
 
         # Read target queue and prepend block items
         try:
-            tgt_queue = channel_manager.get_channel_queue(target_id)
+            tgt_queue = channel_manager.read_channel_queue(target_id)
         except Exception as e:
             log("[Scheduler] fire_block: cannot read target queue: "
                 "{}".format(e))
             return
+        if tgt_queue is None:
+            log("[Scheduler] fire_block: target queue cannot be read right "
+                "now - not fired")
+            return
 
         new_tgt_queue = block_items + tgt_queue
+        _log_block_items(name, block_items)
         try:
             channel_manager.write_channel_queue(target_id, new_tgt_queue)
             log("[Scheduler] fire_block: target queue {} -> {} items "
@@ -489,14 +686,8 @@ class ScheduleManager:
             return
 
         # Write active_block state
-        block_state = {
-            "schedule_id":    sch_id,
-            "target_ch_id":   target_id,
-            "source_ch_id":   source_id,
-            "items_played":   0,
-            "item_count":     len(block_items),
-            "inserted_at":    time.time(),
-        }
+        block_state = _new_block_state(
+            schedule, target_id, source_id, block_items, channel_manager)
         channel_manager.set_active_block(sch_id, block_state)
 
         # Update last_fired and deactivate once-only schedules.
@@ -505,6 +696,7 @@ class ScheduleManager:
         if sch_id in schedules:
             updated = dict(schedules[sch_id])
             updated["last_fired"] = time.time()
+            updated["last_fired_by"] = channel_manager.get_device_label()
             if schedule.get("recurrence") == "once":
                 updated["active"] = False
                 log("[Scheduler] fire_block: once-only schedule '{}' "
@@ -512,9 +704,10 @@ class ScheduleManager:
             channel_manager.update_schedule(sch_id, updated)
 
         log("[Scheduler] fire_block: block fired for '{}' — "
-            "{} items inserted into '{}'".format(
+            "{} items inserted into '{}' (device {})".format(
             name, len(block_items),
-            target_ch.get("name", target_id)))
+            target_ch.get("name", target_id),
+            channel_manager.get_device_label()))
 
     # ------------------------------------------------------------------
     # Predicates
@@ -578,10 +771,6 @@ class ScheduleManager:
             return False
         last_dt = datetime.datetime.fromtimestamp(last)
         return last_dt.date() == now.date()
-
-    def _is_block_active(self, schedule_id, channel_manager) -> bool:
-        """Return True if sch_<id>:active_block exists in state.json."""
-        return channel_manager.get_active_block(schedule_id) is not None
 
     # ------------------------------------------------------------------
     # Public helper: find the active block for a given target channel

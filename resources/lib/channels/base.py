@@ -4,6 +4,7 @@
 # OWNS:   Shared utilities used by all queue builder modules:
 #           normalize_ep()           — strip a raw Kodi episode dict to queue format
 #           normalize_movie()        — strip a raw Kodi movie dict to queue format
+#           QueueItem                — queue item dict that also names its duration source
 #           get_filtered_episodes()  — episode pool with filters applied only
 #           get_available_episodes() — episode pool with filters + exclusions applied
 #           BaseQueueBuilder         — abstract base class for all channel builders
@@ -27,6 +28,24 @@ from resources.lib.utils.logger import log
 
 
 # ---------------------------------------------------------------------------
+# QueueItem
+# ---------------------------------------------------------------------------
+
+class QueueItem(dict):
+    """A queue item (a plain dict in every other respect: it is stored and
+    copied as one) that also says where its duration came from.
+
+    ``duration_source`` is "" when the file's own NFO gave the duration or
+    Kodi's running time was used, and "default_setting" when the user's
+    default length was used because nothing better was known.  The queue
+    builders read it right after normalising an item, to note the guess
+    (ChannelManager.note_default_length).  It is not a queue field and is
+    not saved.  (3.1.159)
+    """
+    duration_source = ""
+
+
+# ---------------------------------------------------------------------------
 # normalize_ep
 # ---------------------------------------------------------------------------
 
@@ -34,11 +53,14 @@ def normalize_ep(ep: dict,
                  channel_id: str,
                  show_id,
                  skip_missing_duration: bool = True,
-                 all_episodes_for_show: list | None = None) -> dict | None:
+                 all_episodes_for_show: list | None = None,
+                 default_seconds: int = 0) -> dict | None:
     """Strip a raw Kodi episode dict to the minimal queue-item format.
 
     Reads duration from the companion NFO / duration cache and stores it on
-    the item.  Returns ``None`` when the duration is zero and
+    the item.  When the NFO cannot give one, the running time Kodi holds for
+    the episode is used, then ``default_seconds`` (the user's default episode
+    length; 0 = none).  Returns ``None`` when the duration is still zero and
     ``skip_missing_duration`` is True — the caller must log the miss and skip
     the item.
 
@@ -55,7 +77,10 @@ def normalize_ep(ep: dict,
         file, duration, _span, _span_ids
     """
     # Deferred imports so the module stays testable without Kodi.
-    from resources.lib.utils.duration_cache import get_duration as _get_dur
+    from resources.lib.utils.duration_cache import (
+        get_duration as _get_dur,
+        fallback_duration as _fallback_dur,
+    )
     from resources.lib.utils.multi_episode import (
         count_episode_span as _count_span,
         span_episode_ids   as _span_ids_fn,
@@ -65,13 +90,16 @@ def normalize_ep(ep: dict,
     sid = ep.get("_show_id")    or ep.get("show_id",    show_id)
 
     duration = _get_dur(ep)
+    _src = ""
+    if duration <= 0:
+        duration, _src = _fallback_dur(ep, default_seconds)
     if skip_missing_duration and duration <= 0:
         return None  # caller must call record_missing_duration and skip
 
     span     = _count_span(ep)
     span_ids = _span_ids_fn(ep, all_episodes_for_show or [])
 
-    return {
+    item = QueueItem({
         "channel_id":  cid,
         "_channel_id": cid,
         "show_id":     sid,
@@ -85,7 +113,10 @@ def normalize_ep(ep: dict,
         "duration":    duration,
         "_span":       span,
         "_span_ids":   span_ids,
-    }
+    })
+    if _src == "default_setting":
+        item.duration_source = _src
+    return item
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +125,8 @@ def normalize_ep(ep: dict,
 
 def normalize_movie(movie: dict,
                     channel_id: str,
-                    library=None) -> dict:
+                    library=None,
+                    default_seconds: int = 0) -> dict:
     """Strip a raw Kodi movie dict to the standard queue-item format.
 
     Includes metadata needed for playlist display (year, genre, plot, rating,
@@ -134,12 +166,20 @@ def normalize_movie(movie: dict,
         except Exception as exc:
             log("[channels/base] normalize_movie cache lookup error: {}".format(exc))
 
+    guessed = False
+    if not runtime and default_seconds and default_seconds > 0:
+        runtime = int(default_seconds)
+        guessed = True
+        log("[channels/base] Duration fallback: movie=\"{}\" file=\"{}\" "
+            "seconds={} source=default_setting".format(
+                movie.get("title", ""), movie.get("file", ""), runtime))
+
     if isinstance(genre, list):
         genre_str = ", ".join(genre)
     else:
         genre_str = str(genre) if genre else ""
 
-    return {
+    item = QueueItem({
         "channel_id":  channel_id,
         "_channel_id": channel_id,
         "show_id":     0,
@@ -157,7 +197,10 @@ def normalize_movie(movie: dict,
         "rating":      float(rating or 0),
         "mpaa":        mpaa,
         "duration":    int(runtime or 0),
-    }
+    })
+    if guessed:
+        item.duration_source = "default_setting"
+    return item
 
 
 # ---------------------------------------------------------------------------
